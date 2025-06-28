@@ -1,0 +1,5 @@
+/Embeddings
+
+# Ignore virtual environments
+.venv/
+.venv1/
