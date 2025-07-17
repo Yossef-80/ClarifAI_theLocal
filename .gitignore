@@ -4,6 +4,6 @@
 .venv/
 .venv1/
 *.mp4
-
+**.mkv
 # (Optional) Ignore PyCharm project files
 **/.idea/
