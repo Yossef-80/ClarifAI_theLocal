@@ -3,3 +3,7 @@
 # Ignore virtual environments
 .venv/
 .venv1/
+*.mp4
+
+# (Optional) Ignore PyCharm project files
+**/.idea/

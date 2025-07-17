@@ -5,10 +5,10 @@ import time
 from ultralytics import YOLO
 import pandas as pd
 # Load your custom YOLO model
-model = YOLO('../yolo_attention_model/attention14june.pt')
+model = YOLO('../yolo_attention_model/old attention model Try V1.pt')
 
 # Load video (use 0 for webcam or path to a file)
-video_path = '../Source Video/S 8 Marta - Kindergarten Theater with Tanya-2m.mkv'
+video_path = "../Source Video/combined videos.mp4"
 cap = cv2.VideoCapture(video_path)
 frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -17,8 +17,8 @@ fps = int(cap.get(cv2.CAP_PROP_FPS))
 log_data = []
 perf_log=[]
 # Define codec and output file
-#fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or 'XVID' or 'avc1'
-#out = cv2.VideoWriter('AttentionOnly_640p.mp4', fourcc, fps, (frame_width, frame_height))
+fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or 'XVID' or 'avc1'
+out = cv2.VideoWriter('attention_weights_16july2025_AI_VIDEO_AttentionOnly_1280p_train_1280.mp4', fourcc, fps, (frame_width, frame_height))
 if not cap.isOpened():
     print("Error: Could not open video.")
     exit()
@@ -63,7 +63,7 @@ while True:
 
     boxes_drawing_time=perf_counter()-t0
     # 🧮 Calculate and show FPS
-    #fps = 1 / (end_time - start_time)
+    # fps = 1 / (end_time - start_time)
     # cv2.putText(frame, f'FPS: {fps:.2f}', (10, 30),
     #             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
     # cv2.putText(frame, f'Attention: {attention_end * 1000:.1f}ms', (10, 150),
@@ -76,7 +76,7 @@ while True:
     writing_showing_frame_time=perf_counter()-t1
     end_time = time.perf_counter()
 
-    #out.write(frame)
+    out.write(frame)
     perf_log.append({
         "frame": frame_idx,
         "timestamp_sec": round(timestamp, 2),
@@ -89,10 +89,10 @@ while True:
     # Break on 'q' key press
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
-#out.release()
+out.release()
 df_detections = pd.DataFrame(log_data)
 df_perf = pd.DataFrame(perf_log)
-with pd.ExcelWriter("yolo_attention_only_1280.xlsx", engine="openpyxl") as writer:
+with pd.ExcelWriter("attention_weights_16july2025_AI_VIDEO_AttentionOnly_1280p_train_1280.xlsx", engine="openpyxl") as writer:
     df_detections.to_excel(writer, sheet_name="Detections", index=False)
     df_perf.to_excel(writer, sheet_name="Performance", index=False)
 cap.release()

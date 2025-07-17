@@ -16,12 +16,12 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Load models
 face_model = YOLO('../yolo_detection_model/yolov11s-face.pt')  # face detection model
-attention_model = YOLO('../yolo_attention_model/attention14june.pt')  # your custom attention model
+attention_model = YOLO('../yolo_attention_model/old_attentionmodel2024_withyolov11_version640.pt')  # your custom attention model
 facenet = InceptionResnetV1(pretrained='vggface2').eval().to(device)
 log_data = []
 perf_log=[]
 # Load face DB
-with open('../face_db.pkl', 'rb') as f:
+with open('../AI_VID_face_db.pkl', 'rb') as f:
     face_db = pickle.load(f)
 
 # Recognition cache
@@ -56,8 +56,8 @@ def detect_faces_with_tracking(video_path):
     fps = int(cap.get(cv2.CAP_PROP_FPS))
 
     # Define codec and output file
-    #fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or 'XVID' or 'avc1'
-    #out = cv2.VideoWriter('allModels&tracking.mp4', fourcc, fps, (frame_width, frame_height))
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or 'XVID' or 'avc1'
+    out = cv2.VideoWriter('allModels&tracking_old_attentionmodel2024_withyolov11_version640.mp4', fourcc, fps, (frame_width, frame_height))
 
 
     frame_count = 0
@@ -212,7 +212,7 @@ def detect_faces_with_tracking(video_path):
         t3=perf_counter()
         cv2.imshow("Tracked Faces", frame)
         writing_showing_frame_time=perf_counter()-t3
-        #out.write(frame)
+        out.write(frame)
         elapsed_time = time.perf_counter() - start_time
         perf_log.append({
             "frame": frame_idx,
@@ -229,15 +229,15 @@ def detect_faces_with_tracking(video_path):
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
-    #out.release()
-    df_detections = pd.DataFrame(log_data)
-    df_perf = pd.DataFrame(perf_log)
-    with pd.ExcelWriter("allModels&Tracking_1280.xlsx", engine="openpyxl") as writer:
-        df_detections.to_excel(writer, sheet_name="Detections", index=False)
-        df_perf.to_excel(writer, sheet_name="Performance", index=False)
+    out.release()
+    # df_detections = pd.DataFrame(log_data)
+    # df_perf = pd.DataFrame(perf_log)
+    # with pd.ExcelWriter("allModels&Tracking_1280.xlsx", engine="openpyxl") as writer:
+    #     df_detections.to_excel(writer, sheet_name="Detections", index=False)
+    #     df_perf.to_excel(writer, sheet_name="Performance", index=False)
     cap.release()
     cv2.destroyAllWindows()
 
 
 # Run
-detect_faces_with_tracking("../Source Video/S 8 Marta - Kindergarten Theater with Tanya-2m.mkv")
+detect_faces_with_tracking("../Source Video/combined videos.mp4")

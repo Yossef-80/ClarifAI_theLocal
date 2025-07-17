@@ -16,21 +16,22 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Load models
 face_model = YOLO('../yolo_detection_model/yolov11s-face.pt')
-attention_model = YOLO('../yolo_attention_model/attention14june.pt')
+attention_model = YOLO('../yolo_attention_model/attention_weights_16july2025.pt')
 facenet = InceptionResnetV1(pretrained='vggface2').eval().to(device)
 detect_log_data = []
 attention_log_data = []
 perf_log=[]
 # Load face DB
-with open('../face_db.pkl', 'rb') as f:
+with open('../AI_VID_face_db.pkl', 'rb') as f:
     face_db = pickle.load(f)
 
 face_id_to_name = {}
 face_id_to_conf = {}
 
 color_map = {
-    "attentive": (0, 255, 0),
-    "inattentive": (0, 0, 255),
+    "attentive": (72, 219, 112),
+    "inattentive": (66, 135, 245),
+    "unattentive": (66, 135, 245),
     "on phone": (0, 165, 255),
     "Unknown": (255, 255, 255),
     "Error": (0, 0, 0)
@@ -51,19 +52,20 @@ def detect_faces_with_tracking(video_path):
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = int(cap.get(cv2.CAP_PROP_FPS))
-    #out = cv2.VideoWriter('optimized_attention_tracking.mp4', cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
+    out = cv2.VideoWriter('allModels&Tracking_Enhanced_attention_weights_16july2025_trained960p_on_960P_detect.xlsx.mp4', cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
 
     frame_count, next_face_id = 0, 0
     face_tracks, last_seen = {}, {}
     max_distance, max_history, max_missing_frames = 40, 20, 10
 
-    cv2.namedWindow("Tracked Faces", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Tracked Faces", 1280, 720)
+    #cv2.namedWindow("Tracked Faces", cv2.WINDOW_NORMAL)
+    #cv2.resizeWindow("Tracked Faces", 1280, 720)
 
     while True:
         start_time = time.perf_counter()
+        t6=perf_counter()
         ret, frame = cap.read()
-
+        frame_read_time=perf_counter()-t6
         if not ret:
             break
         frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
@@ -76,7 +78,7 @@ def detect_faces_with_tracking(video_path):
         detection_model_time = perf_counter() - t0
 
         detections = results[0].boxes
-
+        t5=perf_counter()
         boxes = []
         for box in detections:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -91,13 +93,13 @@ def detect_faces_with_tracking(video_path):
                 "x1": x1, "y1": y1, "x2": x2, "y2": y2,
 
             })
-
+        t_detection_time = perf_counter() - t5
         # Run attention model once per frame
         t_attn = perf_counter()
 
-        attn_results = attention_model(frame, verbose=False, imgsz=1280)[0].boxes
+        attn_results = attention_model(frame, verbose=False, imgsz=960)[0].boxes
         attention_time = perf_counter() - t_attn
-
+        t4 = perf_counter()
         attn_boxes = []
         for attn_box in attn_results:
             ax1, ay1, ax2, ay2 = map(int, attn_box.xyxy[0])
@@ -112,6 +114,7 @@ def detect_faces_with_tracking(video_path):
                 "x1": ax1, "y1": ay1, "x2": ax2, "y2": ay2,
 
             })
+        t_attention_log=perf_counter() - t4
         t1=perf_counter()
         used_ids = set()
         for x1, y1, x2, y2, conf, centroid in boxes:
@@ -164,9 +167,11 @@ def detect_faces_with_tracking(video_path):
             best_iou = 0
             for (ax1, ay1, ax2, ay2), cls in attn_boxes:
                 iou = compute_iou((x1, y1, x2, y2), (ax1, ay1, ax2, ay2))
-                if iou > best_iou and iou > 0.3:
+                if iou > best_iou and iou > 0.08:
                     best_iou = iou
                     attention_label = attention_model.names[cls]
+                    if attention_label == "unattentive":
+                        attention_label="inattentive"
             iou_time=perf_counter() - t2
             name = face_id_to_name.get(matched_id, "Unknown")
             conf = face_id_to_conf.get(matched_id, 1.0)
@@ -203,7 +208,9 @@ def detect_faces_with_tracking(video_path):
         #
         # cv2.putText(frame, f'TotalFrame: {elapsed_time * 1000:.1f}ms', (10, 150),
         #             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-        #out.write(frame)
+        frame_write_start=perf_counter()
+        out.write(frame)
+        frame_write_time=perf_counter()-frame_write_start
         t3=perf_counter()
         cv2.imshow("Tracked Faces", frame)
         writing_showing_frame_time=perf_counter()-t3
@@ -214,9 +221,12 @@ def detect_faces_with_tracking(video_path):
             "num_detections": len(results[0].boxes),
             "detection_time_ms": round(detection_model_time * 1000, 1),
             "attention_time_ms": round(attention_time * 1000, 1),
-
+            "atttention_logs_time_ms":round(t_attention_log * 1000, 1),
+            "detection_logs_time_ms":round(t_detection_time * 1000, 1),
             "showing_time_ms": round(writing_showing_frame_time * 1000, 2),
             "iou_time_ms": round(iou_time * 1000, 1),
+            "frame_read_time_ms": round(frame_read_time * 1000, 1),
+            "frame_write_time_ms": round(frame_write_time * 1000, 2),
             "tracking_time_ms": round(tracking_time * 1000, 1),
             "recognition_time_ms": round(recognition_time * 1000, 1),
             "total_frame_time_ms": round(elapsed_time * 1000, 1)
@@ -224,12 +234,12 @@ def detect_faces_with_tracking(video_path):
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    #out.release()
+    out.release()
     cap.release()
     df_detections = pd.DataFrame(detect_log_data)
     df_attention = pd.DataFrame(attention_log_data)
     df_perf = pd.DataFrame(perf_log)
-    with pd.ExcelWriter("allModels&Tracking_Enhanced_1280.xlsx", engine="openpyxl") as writer:
+    with pd.ExcelWriter("allModels&Tracking_Enhanced_attention_weights_16july2025_trained960p_on_960P_detect.xlsx", engine="openpyxl") as writer:
         df_detections.to_excel(writer, sheet_name="Detections", index=False)
         df_attention.to_excel(writer, sheet_name="Attention", index=False)
 
@@ -237,4 +247,4 @@ def detect_faces_with_tracking(video_path):
     cv2.destroyAllWindows()
 
 # Run
-detect_faces_with_tracking("../Source Video/S 8 Marta - Kindergarten Theater with Tanya-2m.mkv")
+detect_faces_with_tracking("../Source Video/combined videos.mp4")
