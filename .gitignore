@@ -7,3 +7,4 @@
 **.mkv
 # (Optional) Ignore PyCharm project files
 **/.idea/
+**/node_modules/

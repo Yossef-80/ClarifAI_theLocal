@@ -189,33 +189,30 @@ def generate_mjpeg():
         _, buffer = cv2.imencode('.jpg', frame, encode_param)
         frame_bytes = buffer.tobytes()
 
-        # --- Classroom Metrics ---
+        # After processing the current frame:
         attn_this_frame = sum(1 for label in attention_labels if label == 'attentive')
         total_this_frame = len(attention_labels)
-        attn_stats.append((attn_this_frame, total_this_frame))
-        now = time.time()
+
+        # Store the latest values for use in metrics/alerts
+        latest_attn = attn_this_frame
+        latest_total = total_this_frame
+
+        # --- Classroom Metrics ---
         if now - last_metrics_emit >= 1.0 and len(connected_clients) > 0:
-            sum_attn = sum(x for x, _ in attn_stats)
-            sum_total = sum(y for _, y in attn_stats)
-            attention_rate = int((sum_attn / sum_total * 100) if sum_total > 0 else 0)
-            comprehension_rate = attention_rate  # Placeholder: use same as attention
-            active_students = sum_attn  # Number of attentive students in the last second
+            attention_rate = int((latest_attn / latest_total * 100) if latest_total > 0 else 0)
+            comprehension_rate = attention_rate  # Placeholder
+            active_students = latest_attn  # Number of attentive students in the most recent frame
             metrics = {
                 'attention': attention_rate,
                 'comprehension': comprehension_rate,
                 'active': active_students
             }
-            print("Emitting classroom_metrics:", metrics, "to", list(connected_clients), flush=True)
             for sid in list(connected_clients):
                 socketio.emit('classroom_metrics', metrics, room=sid)
-            attn_stats = []
             last_metrics_emit = now
 
         # --- Alerts ---
         if now - last_alert_emit >= 1.0 and len(connected_clients) > 0:
-            # Use the most recent metrics
-            attentive_count = sum_attn
-            attention_rate = int((sum_attn / sum_total * 100) if sum_total > 0 else 0)
             if attention_rate < 50:
                 alert_type = 'danger'
             elif attention_rate < 70:
@@ -224,7 +221,7 @@ def generate_mjpeg():
                 alert_type = 'success'
             alert = {
                 'time': time.strftime('%H:%M:%S', time.gmtime(now)),
-                'message': f'Attention: {attentive_count} attentive students ({attention_rate}%)',
+                'message': f'Attention: {latest_attn} attentive students ({attention_rate}%)',
                 'type': alert_type
             }
             for sid in list(connected_clients):
