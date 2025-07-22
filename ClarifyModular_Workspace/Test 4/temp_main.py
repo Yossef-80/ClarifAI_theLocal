@@ -14,6 +14,7 @@ from Attention import AttentionDetector
 from Face_recognition import FaceRecognizer
 from Fusion import FaceTracker
 from Display import DisplayManager
+import threading
 
 color_map = {
     "attentive": (72, 219, 112),
@@ -157,13 +158,10 @@ def generate_mjpeg():
     tracker = FaceTracker()
     display = DisplayManager(color_map)
 
-    last_metrics_emit = time.time()
-    attn_stats = []
-    last_alert_emit = time.time()
-    alert_counter = 0
-
     target_fps = 20
     frame_interval = 1.0 / target_fps
+    last_metrics_emit = time.time()
+    last_alert_emit = time.time()
 
     while True:
         now = time.time()
@@ -189,29 +187,26 @@ def generate_mjpeg():
         _, buffer = cv2.imencode('.jpg', frame, encode_param)
         frame_bytes = buffer.tobytes()
 
-        # After processing the current frame:
+        # --- Metrics and Alerts ---
         attn_this_frame = sum(1 for label in attention_labels if label == 'attentive')
         total_this_frame = len(attention_labels)
+        attention_rate = int((attn_this_frame / total_this_frame * 100) if total_this_frame > 0 else 0)
+        comprehension_rate = attention_rate  # Placeholder
+        active_students = attn_this_frame
 
-        # Store the latest values for use in metrics/alerts
-        latest_attn = attn_this_frame
-        latest_total = total_this_frame
-
-        # --- Classroom Metrics ---
+        # Emit metrics every second
         if now - last_metrics_emit >= 1.0 and len(connected_clients) > 0:
-            attention_rate = int((latest_attn / latest_total * 100) if latest_total > 0 else 0)
-            comprehension_rate = attention_rate  # Placeholder
-            active_students = latest_attn  # Number of attentive students in the most recent frame
             metrics = {
                 'attention': attention_rate,
                 'comprehension': comprehension_rate,
                 'active': active_students
             }
+            print("Emitting classroom_metrics:", metrics, "to", list(connected_clients), flush=True)
             for sid in list(connected_clients):
                 socketio.emit('classroom_metrics', metrics, room=sid)
             last_metrics_emit = now
 
-        # --- Alerts ---
+        # Emit alerts every second
         if now - last_alert_emit >= 1.0 and len(connected_clients) > 0:
             if attention_rate < 50:
                 alert_type = 'danger'
@@ -221,9 +216,10 @@ def generate_mjpeg():
                 alert_type = 'success'
             alert = {
                 'time': time.strftime('%H:%M:%S', time.gmtime(now)),
-                'message': f'Attention: {latest_attn} attentive students ({attention_rate}%)',
+                'message': f'Attention: {attn_this_frame} attentive students ({attention_rate}%)',
                 'type': alert_type
             }
+            print("Emitting alert:", alert, "to", list(connected_clients), flush=True)
             for sid in list(connected_clients):
                 socketio.emit('alert', alert, room=sid)
             last_alert_emit = now
@@ -236,6 +232,10 @@ def generate_mjpeg():
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
     capture.release()
     cv2.destroyAllWindows()
+
+# Start the background threads on server startup
+processing_thread = threading.Thread(target=generate_mjpeg, daemon=True)
+processing_thread.start()
 
 @socketio.on('start_stream')
 def handle_start_stream():
