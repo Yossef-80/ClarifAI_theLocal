@@ -1,4 +1,3 @@
-
 from Capture import VideoCaptureFrameProvider
 from Detection import YOLODetectionModel
 from Attention import YOLOAttentionModel
@@ -57,6 +56,8 @@ class CompleteSystem:
         self.attention_model.predict(frame, verbose=False, imgsz=960)
         attention_boxes = self.attention_model.current_attention_boxes
         attention_time = perf_counter() - t_attn
+        
+        print("Attention boxes:", self.attention_model.current_attention_boxes)
         
         # ========== MODULE 4: FACE RECOGNITION & TRACKING ==========
         t1 = perf_counter()
@@ -152,6 +153,8 @@ def main():
         detection_weights_path=detection_weights_path,
         attention_weights_path=attention_weights_path
     )
+    
+    print("Attention model names:", system.attention_model.names)
     
     system.run()
 

@@ -24,7 +24,7 @@ class FusionSystem:
     Fusion system that combines attention and detection results using IoU.
     Extracts IoU logic from AllModels&Tracking Enhanced.py
     """
-    def __init__(self, attention_model, iou_threshold=0.08):
+    def __init__(self, attention_model, iou_threshold=0.08):  # Lowered threshold
         self._attention_model = attention_model
         self._iou_threshold = iou_threshold
         
@@ -77,24 +77,22 @@ class FusionSystem:
         self._current_fusion_results = []
         
         for x1, y1, x2, y2, conf, centroid in detection_boxes:
-            # Assign attention label by IoU
             attention_label = "inattentive"
             best_iou = 0
             best_attn_class = None
-            best_attn_conf = 0
-            
-            for (ax1, ay1, ax2, ay2), cls, att_conf in self._current_attn_boxes:
+            for (ax1, ay1, ax2, ay2), cls, _ in self._current_attn_boxes:
                 iou = compute_iou((x1, y1, x2, y2), (ax1, ay1, ax2, ay2))
                 if iou > best_iou and iou > self._iou_threshold:
                     best_iou = iou
                     best_attn_class = cls
-                    best_attn_conf = att_conf
-            
             if best_attn_class is not None:
-                attention_label = self._attention_model.names[best_attn_class] if hasattr(self._attention_model, 'names') else str(best_attn_class)
+                names = self._attention_model.names
+                if isinstance(names, dict):
+                    attention_label = names.get(best_attn_class, str(best_attn_class))
+                else:
+                    attention_label = names[best_attn_class]
                 if attention_label == "unattentive":
                     attention_label = "inattentive"
-            
             # Store fusion result
             fusion_result = {
                 'bbox': (x1, y1, x2, y2),
@@ -102,7 +100,7 @@ class FusionSystem:
                 'detection_conf': conf,
                 'attention_label': attention_label,
                 'attention_class': best_attn_class,
-                'attention_conf': best_attn_conf,
+                'attention_conf': 0, # Confidence is not used for label assignment
                 'iou_score': best_iou
             }
             self._current_fusion_results.append(fusion_result)
@@ -130,17 +128,17 @@ class FusionSystem:
             attention_label = "inattentive"
             best_iou = 0
             best_attn_class = None
-            best_attn_conf = 0
-            
-            for (ax1, ay1, ax2, ay2), cls, att_conf in self._current_attn_boxes:
+            for (ax1, ay1, ax2, ay2), cls, _ in self._current_attn_boxes:
                 iou = compute_iou((x1, y1, x2, y2), (ax1, ay1, ax2, ay2))
                 if iou > best_iou and iou > self._iou_threshold:
                     best_iou = iou
                     best_attn_class = cls
-                    best_attn_conf = att_conf
-            
             if best_attn_class is not None:
-                attention_label = self._attention_model.names[best_attn_class] if hasattr(self._attention_model, 'names') else str(best_attn_class)
+                names = self._attention_model.names
+                if isinstance(names, dict):
+                    attention_label = names.get(best_attn_class, str(best_attn_class))
+                else:
+                    attention_label = names[best_attn_class]
                 if attention_label == "unattentive":
                     attention_label = "inattentive"
             
@@ -149,7 +147,7 @@ class FusionSystem:
             updated_result.update({
                 'attention_label': attention_label,
                 'attention_class': best_attn_class,
-                'attention_conf': best_attn_conf,
+                'attention_conf': 0, # Confidence is not used for label assignment
                 'iou_score': best_iou
             })
             updated_results.append(updated_result)
@@ -278,3 +276,8 @@ class FusionSystem:
         stats['avg_iou'] = np.mean(stats['iou_scores']) if stats['iou_scores'] else 0
         
         return stats
+
+    @property
+    def names(self):
+        """Get the class names from the attention model."""
+        return self.model.names if hasattr(self.model, 'names') else {}
