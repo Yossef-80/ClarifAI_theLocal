@@ -3,9 +3,9 @@ import cv2
 class VideoCaptureHandler:
     def __init__(self, video_path, output_path, frame_width, frame_height, fps):
         self.cap = cv2.VideoCapture(video_path)
-        self.frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.fps = int(cap.get(cv2.CAP_PROP_FPS))
+        self.frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.fps = int(self.cap.get(cv2.CAP_PROP_FPS))
         # self.out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
 
     def read(self):

@@ -9,7 +9,7 @@ class AttentionDetector:
         self.names = self.model.names
 
     def detect(self, frame):
-        results = self.model(frame, verbose=False, imgsz=960,device=self.device)
+        results = self.model(frame, verbose=True, imgsz=960,device=self.device)
         boxes = []
         for box in results[0].boxes:
             x1, y1, x2, y2 = map(int, box.xyxy[0])

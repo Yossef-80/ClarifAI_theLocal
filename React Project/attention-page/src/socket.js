@@ -1,3 +1,15 @@
+// socket.js
 import { io } from 'socket.io-client';
-const socket = io('ws://localhost:8000');
-export default socket; 
+
+export const socket = io('http://localhost:8000', {
+  transports: ['websocket'],
+});
+
+socket.on('connect', () => {
+  console.log('[Socket.IO] Connected:', socket.id);
+});
+
+socket.on('disconnect', () => {
+  console.warn('[Socket.IO] Disconnected');
+});
+

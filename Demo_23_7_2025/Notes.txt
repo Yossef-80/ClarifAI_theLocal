@@ -1,0 +1,11 @@
+Input frame to detection 1280p
+Input frame to attention 960p Attention trained on 960p
+Code sequential fps = 19.7 
+Code Modular, fps = 32 => Add excel file with performance & status
+( Read 3.15ms | Detection 14.81ms | Attention 11.67ms | Tracking 0.67ms | Drawing 1.11ms | Writing 0.00ms | Other 0.41ms 
+| Total 31.81ms)
+
+Code Modular, GUI python start with FPS = 20
+Code Modular, GUI React start with FPS = ?
+
+[PERF] Avg frame time: 70.98 ms | FPS: 14.09 => Add excel file with performance & status

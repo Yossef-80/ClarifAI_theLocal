@@ -68,6 +68,11 @@ def video_processing(sid):
     attn_stats = []
     last_metrics_emit = time.time()
 
+    chunk_size = 10  # Number of frames per chunk
+    frame_chunk = []
+    metrics_chunk = []
+    alert_chunk = []
+
     while True:
         loop_start = time.time()
         ret, frame = capture.read()
@@ -90,9 +95,52 @@ def video_processing(sid):
         total_this_frame = len(attention_labels)
         attn_stats.append((attn_this_frame, total_this_frame))
 
-        # Emit video frame
-        frame_b64 = encode_frame(frame)
-        socketio.emit('video_frame', frame_b64, room=sid)
+        # Encode frame as base64 JPEG
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 70]
+        _, buffer = cv2.imencode('.jpg', frame, encode_param)
+        frame_b64 = base64.b64encode(buffer).decode('utf-8')
+
+        # --- Metrics and Alerts ---
+        attn_this_frame = sum(1 for label in attention_labels if label == 'attentive')
+        total_this_frame = len(attention_labels)
+        attention_rate = int((attn_this_frame / total_this_frame * 100) if total_this_frame > 0 else 0)
+        comprehension_rate = attention_rate  # Placeholder
+        active_students = attn_this_frame
+
+        metrics = {
+            'attention': attention_rate,
+            'comprehension': comprehension_rate,
+            'active': active_students
+        }
+        if attention_rate < 50:
+            alert_type = 'danger'
+        elif attention_rate < 70:
+            alert_type = 'warning'
+        else:
+            alert_type = 'success'
+        alert = {
+            'time': time.strftime('%H:%M:%S', time.gmtime(timestamp)),
+            'message': f'Attention: {attn_this_frame} attentive students ({attention_rate}%)',
+            'type': alert_type
+        }
+
+        # Add to chunk
+        frame_chunk.append(frame_b64)
+        metrics_chunk.append(metrics)
+        alert_chunk.append(alert)
+
+        # Emit chunk when ready
+        if len(frame_chunk) >= chunk_size and len(connected_clients) > 0:
+            chunk = {
+                'frames': frame_chunk,
+                'metrics': metrics_chunk,
+                'alerts': alert_chunk
+            }
+            for sid in list(connected_clients):
+                socketio.emit('video_data_chunk', chunk, room=sid)
+            frame_chunk = []
+            metrics_chunk = []
+            alert_chunk = []
 
         # Every second, emit attentiveness stats
         now = time.time()
@@ -158,7 +206,7 @@ def generate_mjpeg():
     tracker = FaceTracker()
     display = DisplayManager(color_map)
 
-    target_fps = 20
+    target_fps = capture.get_fps()
     frame_interval = 1.0 / target_fps
     last_metrics_emit = time.time()
     last_alert_emit = time.time()

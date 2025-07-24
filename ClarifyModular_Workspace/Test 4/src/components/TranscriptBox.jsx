@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import {socket} from '../socket';
+import socket from '../socket';
 
 function TranscriptBox() {
   const [transcripts, setTranscripts] = useState([]);

@@ -78,7 +78,9 @@ def main():
         t1 = time.perf_counter()
         attn_detections = attention.detect(frame)
         attention_time = time.perf_counter() - t1
+        t1b = time.perf_counter()
         attention_labels = attention.get_attention_labels(boxes, frame, attn_detections)
+        attention_label_time = time.perf_counter() - t1b
         for attn in attn_detections:
             ax1, ay1, ax2, ay2 = attn['box']
             att_conf = attn['conf']
@@ -92,8 +94,10 @@ def main():
         # Tracking & Recognition timing
         t2 = time.perf_counter()
         detected_for_tracker = [(d['box'][0], d['box'][1], d['box'][2], d['box'][3], d['conf'], d['centroid']) for d in detected]
+        t2b = time.perf_counter()
         tracked_faces = tracker.update(detected_for_tracker, frame_count, recognizer, frame)
         tracking_time = time.perf_counter() - t2
+        recognition_time = time.perf_counter() - t2b  # This is approximate, as recognition is inside tracker.update
 
         # Drawing timing
         t3 = time.perf_counter()
@@ -106,7 +110,7 @@ def main():
         writing_time = time.perf_counter() - t4
 
         total_frame_time = time.perf_counter() - frame_start_time
-        measured_sum = frame_read_time + detection_time + attention_time + tracking_time + drawing_time + writing_time
+        measured_sum = frame_read_time + detection_time + attention_time + attention_label_time + tracking_time + recognition_time + drawing_time + writing_time
         other_time = total_frame_time - measured_sum
 
         perf_log.append({
@@ -116,7 +120,9 @@ def main():
             "frame_read_time_ms": round(frame_read_time * 1000, 2),
             "detection_time_ms": round(detection_time * 1000, 2),
             "attention_time_ms": round(attention_time * 1000, 2),
+            "attention_label_time_ms": round(attention_label_time * 1000, 2),
             "tracking_time_ms": round(tracking_time * 1000, 2),
+            "recognition_time_ms": round(recognition_time * 1000, 2),
             "drawing_time_ms": round(drawing_time * 1000, 2),
             "writing_time_ms": round(writing_time * 1000, 2),
             "other_time_ms": round(other_time * 1000, 2),
@@ -124,7 +130,7 @@ def main():
         })
 
         # Optionally print the timings for this frame
-        print(f"Frame {frame_idx}: Read {frame_read_time*1000:.2f}ms | Detection {detection_time*1000:.2f}ms | Attention {attention_time*1000:.2f}ms | Tracking {tracking_time*1000:.2f}ms | Drawing {drawing_time*1000:.2f}ms | Writing {writing_time*1000:.2f}ms | Other {other_time*1000:.2f}ms | Total {total_frame_time*1000:.2f}ms")
+        print(f"Frame {frame_idx}: Read {frame_read_time*1000:.2f}ms | Detection {detection_time*1000:.2f}ms | Attention {attention_time*1000:.2f}ms | AttentionLabel {attention_label_time*1000:.2f}ms | Tracking {tracking_time*1000:.2f}ms | Recognition {recognition_time*1000:.2f}ms | Drawing {drawing_time*1000:.2f}ms | Writing {writing_time*1000:.2f}ms | Other {other_time*1000:.2f}ms | Total {total_frame_time*1000:.2f}ms")
 
         cv2.imshow("Tracked Faces", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -134,10 +140,10 @@ def main():
     df_detections = pd.DataFrame(detect_log_data)
     df_attention = pd.DataFrame(attention_log_data)
     df_perf = pd.DataFrame(perf_log)
-    # with pd.ExcelWriter("allModels&Tracking_Enhanced_attention_weights_16july2025_trained960p_on_960P_detect.xlsx", engine="openpyxl") as writer:
-    #     df_detections.to_excel(writer, sheet_name="Detections", index=False)
-    #     df_attention.to_excel(writer, sheet_name="Attention", index=False)
-    #     df_perf.to_excel(writer, sheet_name="Performance", index=False)
+    with pd.ExcelWriter("modular_output_24_7_2025_960Attention_1280Detection_Test3.xlsx", engine="openpyxl") as writer:
+        df_detections.to_excel(writer, sheet_name="Detections", index=False)
+        df_attention.to_excel(writer, sheet_name="Attention", index=False)
+        df_perf.to_excel(writer, sheet_name="Performance", index=False)
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":

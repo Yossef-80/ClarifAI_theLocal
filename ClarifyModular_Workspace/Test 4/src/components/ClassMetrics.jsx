@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import {socket} from '../socket';
+import socket from '../socket';
 
 function ClassMetrics() {
   const [metrics, setMetrics] = useState({ attention: 0, comprehension: 0, active: 0 });

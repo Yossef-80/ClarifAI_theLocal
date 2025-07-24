@@ -15,14 +15,14 @@ from time import perf_counter
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Load models
-face_model = YOLO('../yolo_detection_model/yolov11s-face.pt')
-attention_model = YOLO('../yolo_attention_model/attention_weights_16july2025.pt')
+face_model = YOLO('../../yolo_detection_model/yolov11s-face.pt')
+attention_model = YOLO('../../yolo_attention_model/attention_weights_16july2025.pt')
 facenet = InceptionResnetV1(pretrained='vggface2').eval().to(device)
 detect_log_data = []
 attention_log_data = []
 perf_log=[]
 # Load face DB
-with open('../AI_VID_face_db.pkl', 'rb') as f:
+with open('../../AI_VID_face_db.pkl', 'rb') as f:
     face_db = pickle.load(f)
 
 face_id_to_name = {}
@@ -52,7 +52,7 @@ def detect_faces_with_tracking(video_path):
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = int(cap.get(cv2.CAP_PROP_FPS))
-    out = cv2.VideoWriter('allModels&Tracking_Enhanced_attention_weights_16july2025_trained960p_on_960P_detect.xlsx.mp4', cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
+    # out = cv2.VideoWriter('allModels&Tracking_Enhanced_attention_weights_16july2025_trained960p_on_960P_detect.xlsx.mp4', cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
 
     frame_count, next_face_id = 0, 0
     face_tracks, last_seen = {}, {}
@@ -209,7 +209,7 @@ def detect_faces_with_tracking(video_path):
         # cv2.putText(frame, f'TotalFrame: {elapsed_time * 1000:.1f}ms', (10, 150),
         #             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
         frame_write_start=perf_counter()
-        out.write(frame)
+        # out.write(frame)
         frame_write_time=perf_counter()-frame_write_start
         t3=perf_counter()
         cv2.imshow("Tracked Faces", frame)
@@ -234,17 +234,17 @@ def detect_faces_with_tracking(video_path):
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    out.release()
+    # out.release()
     cap.release()
     df_detections = pd.DataFrame(detect_log_data)
     df_attention = pd.DataFrame(attention_log_data)
     df_perf = pd.DataFrame(perf_log)
-    with pd.ExcelWriter("allModels&Tracking_Enhanced_attention_weights_16july2025_trained960p_on_960P_detect.xlsx", engine="openpyxl") as writer:
-        df_detections.to_excel(writer, sheet_name="Detections", index=False)
-        df_attention.to_excel(writer, sheet_name="Attention", index=False)
+    # with pd.ExcelWriter("allModels&Tracking_Enhanced_attention_weights_16july2025_trained960p_on_960P_detect.xlsx", engine="openpyxl") as writer:
+    #     df_detections.to_excel(writer, sheet_name="Detections", index=False)
+    #     df_attention.to_excel(writer, sheet_name="Attention", index=False)
 
-        df_perf.to_excel(writer, sheet_name="Performance", index=False)
-    cv2.destroyAllWindows()
+    #     df_perf.to_excel(writer, sheet_name="Performance", index=False)
+    # cv2.destroyAllWindows()
 
 # Run
-detect_faces_with_tracking("../Source Video/combined videos.mp4")
+detect_faces_with_tracking("../../Source Video/combined videos.mp4")
