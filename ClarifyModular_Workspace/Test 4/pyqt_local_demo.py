@@ -12,6 +12,7 @@ from Face_recognition import FaceRecognizer
 from Fusion import FaceTracker
 from Display import DisplayManager
 import time
+import pandas as pd
 
 color_map = {
     "attentive": (72, 219, 112),
@@ -171,6 +172,7 @@ class VideoWindow(QWidget):
         self.buffer_size = 10  # Number of frames to buffer
         self.frame_buffer = []  # Rolling buffer for processed frames
         self.last_alert_level = None  # Track last alert type
+        self.timing_log = []  # For per-frame timing
 
     def add_alert(self, message, alert_type="danger"):
         time_str = QDateTime.currentDateTime().toString("hh:mm:ss")
@@ -210,6 +212,15 @@ class VideoWindow(QWidget):
             self.capture.release()
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        # Write timing log to Excel
+        if self.timing_log:
+            df_timing = pd.DataFrame(self.timing_log)
+            try:
+                excel_path = 'pyqt_timings.xlsx'
+                df_timing.to_excel(excel_path, index=False)
+                print(f"Timing log saved to {excel_path}")
+            except Exception as e:
+                print(f"Excel logging error: {e}")
 
     def next_frame(self):
         if not self.running or not self.capture:
@@ -308,6 +319,18 @@ class VideoWindow(QWidget):
         print(f"[Timing] Total frame: {total_time_ms:.2f} ms")
         fps = 1000 / total_time_ms if total_time_ms > 0 else 0
         print(f"[Timing] Computed FPS: {fps:.2f}")
+        # Log timings for this frame
+        self.timing_log.append({
+            'frame': self.frame_count,
+            'capture_read_ms': capture_time_ms,
+            'detection_ms': det_time_ms,
+            'attention_ms': attn_time_ms,
+            'attention_labels_ms': labels_time_ms,
+            'tracker_update_ms': tracker_time_ms,
+            'display_draw_ms': draw_time_ms,
+            'total_frame_ms': total_time_ms,
+            'computed_fps': fps
+        })
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = VideoWindow()
