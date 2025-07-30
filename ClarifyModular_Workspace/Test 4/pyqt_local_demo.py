@@ -4,7 +4,7 @@ import torch
 import numpy as np
 from PyQt5.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget, QProgressBar, QHBoxLayout, QPushButton, QGridLayout, QTextEdit, QListWidget, QListWidgetItem, QSizePolicy
 from PyQt5.QtGui import QPixmap, QImage, QColor
-from PyQt5.QtCore import Qt, QTimer, QDateTime
+from PyQt5.QtCore import Qt, QTimer, QDateTime, QThread, pyqtSignal, QMutex, QWaitCondition
 from Capture import VideoCaptureHandler
 from Detection import FaceDetector
 from Attention import AttentionDetector
@@ -13,6 +13,7 @@ from Fusion import FaceTracker
 from Display import DisplayManager
 import time
 import pandas as pd
+import queue
 
 color_map = {
     "attentive": (72, 219, 112),
@@ -23,10 +24,189 @@ color_map = {
     "Error": (0, 0, 0)
 }
 
+class CaptureThread(QThread):
+    """Thread 1: Frame capture - feeds raw frames to detection thread"""
+    frame_captured = pyqtSignal(object, int)  # frame, frame_count
+    
+    def __init__(self, capture_handler, interval=100):
+        super().__init__()
+        self.capture_handler = capture_handler
+        self.interval = interval
+        self.running = True
+        self.frame_count = 0
+        
+    def run(self):
+        while self.running:
+            ret, frame = self.capture_handler.read()
+            if ret:
+                self.frame_count += 1
+                print(f"[Capture] Frame {self.frame_count} captured")
+                self.frame_captured.emit(frame.copy(), self.frame_count)
+            else:
+                print("[Capture] Video ended")
+                break
+            self.msleep(self.interval)
+            
+    def stop(self):
+        self.running = False
+
+class DetectionThread(QThread):
+    """Thread 2: Face detection - gets frames from capture, passes results to recognition and attention"""
+    detection_complete = pyqtSignal(object, list, list, int)  # frame, detections, face_crops, frame_count
+    
+    def __init__(self, detector):
+        super().__init__()
+        self.detector = detector
+        self.running = True
+        self.frame_queue = queue.Queue()
+        self.mutex = QMutex()
+        self.wait_condition = QWaitCondition()
+        
+    def add_frame(self, frame, frame_count):
+        """Called by capture thread to add a new frame for processing"""
+        self.mutex.lock()
+        self.frame_queue.put((frame, frame_count))
+        self.wait_condition.wakeOne()
+        self.mutex.unlock()
+        
+    def run(self):
+        while self.running:
+            self.mutex.lock()
+            if self.frame_queue.empty():
+                self.wait_condition.wait(self.mutex)
+            if not self.running:
+                self.mutex.unlock()
+                break
+                
+            frame, frame_count = self.frame_queue.get()
+            self.mutex.unlock()
+            
+            try:
+                # Perform face detection
+                detections = self.detector.detect(frame)
+                
+                # Extract face crops for recognition and attention
+                face_crops = []
+                for det in detections:
+                    x1, y1, x2, y2 = det['box']
+                    face_crop = frame[y1:y2, x1:x2]
+                    if face_crop.size > 0:
+                        face_crops.append(face_crop)
+                    else:
+                        face_crops.append(None)
+                
+                print(f"[Detection] Frame {frame_count}: {len(detections)} faces detected")
+                self.detection_complete.emit(frame, detections, face_crops, frame_count)
+                
+            except Exception as e:
+                print(f"[Detection] Error processing frame {frame_count}: {e}")
+                
+    def stop(self):
+        self.running = False
+        self.wait_condition.wakeAll()
+
+class RecognitionThread(QThread):
+    """Thread 3: Face recognition - gets face crops from detection thread"""
+    recognition_complete = pyqtSignal(list, int)  # recognition_results, frame_count
+    
+    def __init__(self, recognizer):
+        super().__init__()
+        self.recognizer = recognizer
+        self.running = True
+        self.face_queue = queue.Queue()
+        self.mutex = QMutex()
+        self.wait_condition = QWaitCondition()
+        
+    def add_faces(self, face_crops, frame_count):
+        """Called by detection thread to add face crops for recognition"""
+        self.mutex.lock()
+        self.face_queue.put((face_crops, frame_count))
+        self.wait_condition.wakeOne()
+        self.mutex.unlock()
+        
+    def run(self):
+        while self.running:
+            self.mutex.lock()
+            if self.face_queue.empty():
+                self.wait_condition.wait(self.mutex)
+            if not self.running:
+                self.mutex.unlock()
+                break
+                
+            face_crops, frame_count = self.face_queue.get()
+            self.mutex.unlock()
+            
+            try:
+                recognition_results = []
+                for face_crop in face_crops:
+                    if face_crop is not None and face_crop.size > 0:
+                        name, score = self.recognizer.recognize(face_crop)
+                        recognition_results.append({'name': name, 'score': score})
+                    else:
+                        recognition_results.append({'name': 'Unknown', 'score': 0.0})
+                
+                print(f"[Recognition] Frame {frame_count}: {len(recognition_results)} faces recognized")
+                self.recognition_complete.emit(recognition_results, frame_count)
+                
+            except Exception as e:
+                print(f"[Recognition] Error processing frame {frame_count}: {e}")
+                
+    def stop(self):
+        self.running = False
+        self.wait_condition.wakeAll()
+
+class AttentionThread(QThread):
+    """Thread 4: Attention detection - gets face crops from detection thread"""
+    attention_complete = pyqtSignal(list, int)  # attention_results, frame_count
+    
+    def __init__(self, attention_detector):
+        super().__init__()
+        self.attention_detector = attention_detector
+        self.running = True
+        self.frame_queue = queue.Queue()
+        self.mutex = QMutex()
+        self.wait_condition = QWaitCondition()
+        
+    def add_frame_data(self, frame, face_boxes, frame_count):
+        """Called by detection thread to add frame and face boxes for attention detection"""
+        self.mutex.lock()
+        self.frame_queue.put((frame, face_boxes, frame_count))
+        self.wait_condition.wakeOne()
+        self.mutex.unlock()
+        
+    def run(self):
+        while self.running:
+            self.mutex.lock()
+            if self.frame_queue.empty():
+                self.wait_condition.wait(self.mutex)
+            if not self.running:
+                self.mutex.unlock()
+                break
+                
+            frame, face_boxes, frame_count = self.frame_queue.get()
+            self.mutex.unlock()
+            
+            try:
+                # Use the attention detector to get attention labels for the face boxes
+                attention_labels = self.attention_detector.get_attention_labels(face_boxes, frame)
+                
+                print(f"[Attention] Frame {frame_count}: {len(attention_labels)} attention states detected")
+                self.attention_complete.emit(attention_labels, frame_count)
+                
+            except Exception as e:
+                print(f"[Attention] Error processing frame {frame_count}: {e}")
+                # Return default labels in case of error
+                attention_labels = ['Unknown'] * len(face_boxes)
+                self.attention_complete.emit(attention_labels, frame_count)
+                
+    def stop(self):
+        self.running = False
+        self.wait_condition.wakeAll()
+
 class VideoWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("ClarifAI Modular - Local Video Processing Demo")
+        self.setWindowTitle("ClarifAI Modular - Threaded Video Processing Demo")
         self.setGeometry(100, 100, 1280, 800)
         self.setStyleSheet("""
             QWidget {
@@ -69,6 +249,7 @@ class VideoWindow(QWidget):
                 padding: 8px;
             }
         """)
+        
         # Section Titles
         self.video_title = QLabel("🎥 Video Stream")
         self.video_title.setStyleSheet("font-size:17px;font-weight:600;padding:4px 0 8px 0;color:#222;")
@@ -78,20 +259,24 @@ class VideoWindow(QWidget):
         self.transcription_title.setStyleSheet("font-size:17px;font-weight:600;padding:4px 0 8px 0;color:#222;")
         self.metrics_title = QLabel("📊 Metrics")
         self.metrics_title.setStyleSheet("font-size:17px;font-weight:600;padding:4px 0 8px 0;color:#222;")
+        
         # Video (Top Left)
         self.video_label = QLabel("Loading video...")
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setStyleSheet("background: #f1f5f9; color: #222; border-radius: 12px; font-size: 18px;")
         self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
         # Alerts (Top Right)
         self.alerts_widget = QListWidget()
         self.alerts_widget.setStyleSheet("background: #fff; color: #222; font-size: 15px; border-radius: 10px;")
         self.alerts_widget.setAlternatingRowColors(False)
+        
         # Transcription (Bottom Left)
         self.transcription_widget = QTextEdit()
         self.transcription_widget.setReadOnly(True)
         self.transcription_widget.setPlaceholderText("Transcription will appear here.")
         self.transcription_widget.setStyleSheet("background: #fff; color: #222; font-size: 15px; border-radius: 10px;")
+        
         # Metrics (Bottom Right)
         self.attention_bar = QProgressBar()
         self.comprehension_bar = QProgressBar()
@@ -100,6 +285,7 @@ class VideoWindow(QWidget):
         self.comprehension_bar.setFormat("Comprehension: %p%")
         self.attention_bar.setMaximum(100)
         self.comprehension_bar.setMaximum(100)
+        
         metrics_layout = QVBoxLayout()
         metrics_layout.setSpacing(10)
         metrics_layout.addWidget(self.attention_bar)
@@ -107,6 +293,7 @@ class VideoWindow(QWidget):
         metrics_layout.addWidget(self.active_label)
         metrics_widget = QWidget()
         metrics_widget.setLayout(metrics_layout)
+        
         # Start/Stop buttons (below metrics)
         self.start_btn = QPushButton("Start")
         self.start_btn.setMinimumWidth(90)
@@ -115,11 +302,13 @@ class VideoWindow(QWidget):
         self.stop_btn.setMinimumWidth(90)
         self.stop_btn.clicked.connect(self.stop_video)
         self.stop_btn.setEnabled(False)
+        
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(12)
         btn_layout.addWidget(self.start_btn)
         btn_layout.addWidget(self.stop_btn)
         metrics_layout.addLayout(btn_layout)
+        
         # Grid Layout
         grid = QGridLayout()
         # Top left: Video
@@ -142,6 +331,7 @@ class VideoWindow(QWidget):
         metrics_vbox.addWidget(self.metrics_title)
         metrics_vbox.addWidget(metrics_widget)
         grid.addLayout(metrics_vbox, 1, 1)
+        
         grid.setColumnStretch(0, 7)  # 70%
         grid.setColumnStretch(1, 3)  # 30%
         grid.setRowStretch(0, 3)  # 60%
@@ -150,69 +340,90 @@ class VideoWindow(QWidget):
         grid.setVerticalSpacing(18)
         self.setLayout(grid)
 
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.next_frame)
-        self.running = False
-
         # Video/model setup
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.video_path = "../../Source Video/combined videos.mp4"
         self.face_model_path = '../../yolo_detection_model/yolov11s-face.pt'
         self.attention_model_path = '../../yolo_attention_model/attention_weights_16july2025.pt'
         self.face_db_path = '../../AI_VID_face_db.pkl'
-        self.capture = None
-        self.detector = None
-        self.attention = None
-        self.recognizer = None
-        self.tracker = None
-        self.display = None
-        #self.fps = 30
+        
+        # Thread management
+        self.capture_thread = None
+        self.detection_thread = None
+        self.recognition_thread = None
+        self.attention_thread = None
+        
+        # Data storage for combining results
+        self.pending_frames = {}  # frame_count -> {frame, detections, recognition, attention}
         self.frame_count = 0
         self.attn_stats = []
-        self.buffer_size = 10  # Number of frames to buffer
-        self.frame_buffer = []  # Rolling buffer for processed frames
-        self.last_alert_level = None  # Track last alert type
-        self.timing_log = []  # For per-frame timing
+        self.timing_log = []
+        
+        # Display manager
+        self.display_manager = DisplayManager(color_map)
 
     def add_alert(self, message, alert_type="danger"):
         time_str = QDateTime.currentDateTime().toString("hh:mm:ss")
         item = QListWidgetItem(f"[{time_str}] {message}")
-        # Modern, subtle colors for light theme
         if alert_type == "success":
-            item.setBackground(QColor("#c6f6d5"))  # light green
+            item.setBackground(QColor("#c6f6d5"))
             item.setForeground(QColor("#22543d"))
         elif alert_type == "warning":
-            item.setBackground(QColor("#fefcbf"))  # light yellow
+            item.setBackground(QColor("#fefcbf"))
             item.setForeground(QColor("#744210"))
         else:
-            item.setBackground(QColor("#fed7d7"))  # light red
+            item.setBackground(QColor("#fed7d7"))
             item.setForeground(QColor("#742a2a"))
         self.alerts_widget.addItem(item)
         self.alerts_widget.scrollToBottom()
 
     def start_video(self):
-        self.capture = VideoCaptureHandler(self.video_path)
-        self.fps = self.capture.get_fps()
-        self.detector = FaceDetector(self.face_model_path, self.device)
-        self.attention = AttentionDetector(self.attention_model_path, self.device)
-        self.recognizer = FaceRecognizer(self.face_db_path, self.device)
-        self.tracker = FaceTracker()
-        self.display = DisplayManager(color_map)
-        self.frame_count = 0
-        self.attn_stats = []
-        self.running = True
+        # Initialize components
+        capture_handler = VideoCaptureHandler(self.video_path)
+        detector = FaceDetector(self.face_model_path, self.device)
+        recognizer = FaceRecognizer(self.face_db_path, self.device)
+        attention_detector = AttentionDetector(self.attention_model_path, self.device)
+        
+        # Create and start threads
+        self.capture_thread = CaptureThread(capture_handler, interval=100)
+        self.detection_thread = DetectionThread(detector)
+        self.recognition_thread = RecognitionThread(recognizer)
+        self.attention_thread = AttentionThread(attention_detector)
+        
+        # Connect signals
+        self.capture_thread.frame_captured.connect(self.detection_thread.add_frame)
+        self.detection_thread.detection_complete.connect(self.on_detection_complete)
+        self.recognition_thread.recognition_complete.connect(self.on_recognition_complete)
+        self.attention_thread.attention_complete.connect(self.on_attention_complete)
+        
+        # Start threads
+        self.capture_thread.start()
+        self.detection_thread.start()
+        self.recognition_thread.start()
+        self.attention_thread.start()
+        
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
-        self.timer.start(int(1000 / self.fps))
 
     def stop_video(self):
-        self.running = False
-        self.timer.stop()
-        if self.capture:
-            self.capture.release()
+        # Stop all threads
+        if self.capture_thread:
+            self.capture_thread.stop()
+            self.capture_thread.wait()
+        if self.detection_thread:
+            self.detection_thread.stop()
+            self.detection_thread.wait()
+        if self.recognition_thread:
+            self.recognition_thread.stop()
+            self.recognition_thread.wait()
+        if self.attention_thread:
+            self.attention_thread.stop()
+            self.attention_thread.wait()
+            
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
-        # Write timing log to Excel
+        
+        # Save timing log
         if self.timing_log:
             df_timing = pd.DataFrame(self.timing_log)
             try:
@@ -222,69 +433,125 @@ class VideoWindow(QWidget):
             except Exception as e:
                 print(f"Excel logging error: {e}")
 
-    def next_frame(self):
-        if not self.running or not self.capture:
+    def on_detection_complete(self, frame, detections, face_crops, frame_count):
+        """Called when detection thread completes processing a frame"""
+        print(f"[Main] Detection complete for frame {frame_count}")
+        
+        # Store detection results
+        if frame_count not in self.pending_frames:
+            self.pending_frames[frame_count] = {}
+        self.pending_frames[frame_count].update({
+            'frame': frame,
+            'detections': detections,
+            'face_crops': face_crops
+        })
+        
+        # Extract face boxes for attention detection
+        face_boxes = [det['box'] for det in detections]
+        
+        # Send face crops to recognition thread
+        self.recognition_thread.add_faces(face_crops, frame_count)
+        # Send frame and face boxes to attention thread
+        self.attention_thread.add_frame_data(frame, face_boxes, frame_count)
+        
+        # Check if we can display this frame
+        self.try_display_frame(frame_count)
+
+    def on_recognition_complete(self, recognition_results, frame_count):
+        """Called when recognition thread completes processing"""
+        print(f"[Main] Recognition complete for frame {frame_count}")
+        
+        if frame_count not in self.pending_frames:
+            self.pending_frames[frame_count] = {}
+        self.pending_frames[frame_count]['recognition'] = recognition_results
+        
+        self.try_display_frame(frame_count)
+
+    def on_attention_complete(self, attention_results, frame_count):
+        """Called when attention thread completes processing"""
+        print(f"[Main] Attention complete for frame {frame_count}")
+        
+        if frame_count not in self.pending_frames:
+            self.pending_frames[frame_count] = {}
+        self.pending_frames[frame_count]['attention'] = attention_results
+        
+        self.try_display_frame(frame_count)
+
+    def try_display_frame(self, frame_count):
+        """Check if all data is available for a frame and display it"""
+        if frame_count not in self.pending_frames:
             return
-        t_start = time.perf_counter()
-        t0 = time.perf_counter()
-        ret, frame = self.capture.read()
-        t1 = time.perf_counter()
-        if not ret:
-            self.stop_video()
-            self.video_label.setText("Video ended.")
+            
+        frame_data = self.pending_frames[frame_count]
+        required_keys = ['frame', 'detections', 'recognition', 'attention']
+        
+        if not all(key in frame_data for key in required_keys):
+            return  # Not all data available yet
+            
+        # All data available, display the frame
+        frame = frame_data['frame']
+        detections = frame_data['detections']
+        recognition_results = frame_data['recognition']
+        attention_results = frame_data['attention']
+        
+        # Format data for DisplayManager
+        tracked_faces = []
+        for i, det in enumerate(detections):
+            if i < len(recognition_results) and i < len(attention_results):
+                x1, y1, x2, y2 = det['box']
+                name = recognition_results[i]['name']
+                conf = recognition_results[i]['score']
+                tracked_faces.append((i, x1, y1, x2, y2, name, conf))  # Use i as matched_id for now
+        
+        # Draw the frame
+        processed_frame = self.display_manager.draw(frame, tracked_faces, attention_results, ['attentive', 'inattentive'])
+        
+        # Update GUI
+        self.update_display(processed_frame, frame_count)
+        
+        # Update metrics
+        self.update_metrics(attention_results, frame_count)
+        
+        # Clean up
+        del self.pending_frames[frame_count]
+
+    def update_display(self, processed_frame, frame_count):
+        """Update the video display with the processed frame"""
+        if processed_frame is None:
             return
-        self.frame_count += 1
-        print(f"[Frame] {self.frame_count} | Target FPS: {self.fps}")
-        # Timing for detection
-        start_det = time.perf_counter()
-        detected = self.detector.detect(frame)
-        end_det = time.perf_counter()
-        det_time_ms = (end_det - start_det) * 1000
-        print(f"[Timing] Detection model: {det_time_ms:.2f} ms")
-        boxes = [d['box'] for d in detected]
-        # Timing for attention
-        start_attn = time.perf_counter()
-        attn_detections = self.attention.detect(frame)
-        end_attn = time.perf_counter()
-        attn_time_ms = (end_attn - start_attn) * 1000
-        print(f"[Timing] Attention model: {attn_time_ms:.2f} ms")
-        # Timing for get_attention_labels
-        start_labels = time.perf_counter()
-        attention_labels = self.attention.get_attention_labels(boxes, frame, attn_detections)
-        end_labels = time.perf_counter()
-        labels_time_ms = (end_labels - start_labels) * 1000
-        print(f"[Timing] Attention labels: {labels_time_ms:.2f} ms")
-        # Timing for tracker update
-        start_tracker = time.perf_counter()
-        detected_for_tracker = [(d['box'][0], d['box'][1], d['box'][2], d['box'][3], d['conf'], d['centroid']) for d in detected]
-        tracked_faces = self.tracker.update(detected_for_tracker, self.frame_count, self.recognizer, frame)
-        end_tracker = time.perf_counter()
-        tracker_time_ms = (end_tracker - start_tracker) * 1000
-        print(f"[Timing] Tracker update: {tracker_time_ms:.2f} ms")
-        # Timing for display draw
-        start_draw = time.perf_counter()
-        processed_frame = self.display.draw(frame, tracked_faces, attention_labels, self.attention.names)
-        end_draw = time.perf_counter()
-        draw_time_ms = (end_draw - start_draw) * 1000
-        print(f"[Timing] Display draw: {draw_time_ms:.2f} ms")
-        # Timing for capture.read
-        capture_time_ms = (t1 - t0) * 1000
-        print(f"[Timing] Capture read: {capture_time_ms:.2f} ms")
-        # Metrics
-        attn_this_frame = sum(1 for label in attention_labels if label == 'attentive')
-        total_this_frame = len(attention_labels)
+            
+        rgb_image = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb_image.shape
+        bytes_per_line = ch * w
+        qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        pixmap = QPixmap.fromImage(qt_image)
+        
+        self.video_label.setPixmap(pixmap.scaled(
+            self.video_label.width(), self.video_label.height(), 
+            Qt.KeepAspectRatio, Qt.SmoothTransformation
+        ))
+        print(f"[Display] Frame {frame_count} displayed")
+
+    def update_metrics(self, attention_results, frame_count):
+        """Update metrics and alerts based on attention results"""
+        if not attention_results:
+            return
+            
+        attn_this_frame = sum(1 for state in attention_results if state == 'attentive')
+        total_this_frame = len(attention_results)
         self.attn_stats.append((attn_this_frame, total_this_frame))
-        # Update metrics every second
-        if self.frame_count % self.fps == 0:
-            # Use the last frame's stats for alert and metrics
+        
+        # Update metrics every 30 frames (assuming 30 FPS)
+        if frame_count % 30 == 0:
             if self.attn_stats:
                 last_attn, last_total = self.attn_stats[-1]
                 attentive_ratio = last_attn / last_total if last_total > 0 else 0
                 percent_val = int(attentive_ratio * 100)
-                # Update metrics widgets
+                
                 self.attention_bar.setValue(percent_val)
-                self.comprehension_bar.setValue(percent_val)  # Placeholder
+                self.comprehension_bar.setValue(percent_val)
                 self.active_label.setText(f"Active Students: {last_attn}")
+                
                 # Alert logic
                 if attentive_ratio <= 0.5:
                     alert_type = "danger"
@@ -295,42 +562,10 @@ class VideoWindow(QWidget):
                 else:
                     alert_type = "success"
                     alert_msg = f"Good: {last_attn} of {last_total} students are attentive. ({percent_val}%)"
+                    
                 self.add_alert(alert_msg, alert_type)
-                self.last_alert_level = alert_type
             self.attn_stats = []
-        # Buffer logic
-        self.frame_buffer.append(processed_frame)
-        if len(self.frame_buffer) > self.buffer_size:
-            # Pop and display the oldest frame
-            frame_to_show = self.frame_buffer.pop(0)
-            rgb_image = cv2.cvtColor(frame_to_show, cv2.COLOR_BGR2RGB)
-            h, w, ch = rgb_image.shape
-            bytes_per_line = ch * w
-            qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
-            pixmap = QPixmap.fromImage(qt_image)
-            # Always scale to current label size
-            self.video_label.setPixmap(pixmap.scaled(
-                self.video_label.width(), self.video_label.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation
-            ))
-        else:
-            print(f"[Buffering] Buffered {len(self.frame_buffer)}/{self.buffer_size} frames before visualization.")
-        t_end = time.perf_counter()
-        total_time_ms = (t_end - t_start) * 1000
-        print(f"[Timing] Total frame: {total_time_ms:.2f} ms")
-        fps = 1000 / total_time_ms if total_time_ms > 0 else 0
-        print(f"[Timing] Computed FPS: {fps:.2f}")
-        # Log timings for this frame
-        self.timing_log.append({
-            'frame': self.frame_count,
-            'capture_read_ms': capture_time_ms,
-            'detection_ms': det_time_ms,
-            'attention_ms': attn_time_ms,
-            'attention_labels_ms': labels_time_ms,
-            'tracker_update_ms': tracker_time_ms,
-            'display_draw_ms': draw_time_ms,
-            'total_frame_ms': total_time_ms,
-            'computed_fps': fps
-        })
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = VideoWindow()
