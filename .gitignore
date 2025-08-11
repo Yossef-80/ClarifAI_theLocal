@@ -13,3 +13,4 @@ Source Video/
 face_embedding_vggface2.pth
 *.pth
 *.pt
+/Cloud
