@@ -32,6 +32,8 @@ color_map = {
     "Unknown": (255, 255, 255),
     "Error": (0, 0, 0)
 }
+from collections import Counter
+
 
 class VideoWindow(QWidget):
     def __init__(self):
@@ -161,6 +163,7 @@ class VideoWindow(QWidget):
         grid.setHorizontalSpacing(18)
         grid.setVerticalSpacing(18)
         self.setLayout(grid)
+        self.timing_log = []  # Store frame-by-frame and total timing
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_gui_frame)
@@ -173,13 +176,13 @@ class VideoWindow(QWidget):
         self.fps_start_time = None
         self.fps_frame_count = 0
         self.current_fps = 0
-
+        self.engagements = []
         # Video/model setup
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.video_path = "../../Source Video/combined videos.mp4"
+        self.video_path = "../../Source Video/Real_Video/vid3.mp4"
         self.face_model_path = '../../yolo_detection_model/yolov11s-face.pt'
         self.attention_model_path = '../../yolo_attention_model/attention_weights_16july2025.pt'
-        self.face_db_path = '../../AI_VID_face_db.pkl'
+        self.face_db_path = '../../AI_VID_face_db_real_kids.pkl'
         self.capture = None
         self.detector = None
         self.attention = None
@@ -193,7 +196,9 @@ class VideoWindow(QWidget):
         self.frame_buffer = []  # Rolling buffer for processed frames
         self.last_alert_level = None  # Track last alert type
         self.timing_log = []  # For per-frame timing
-
+        self.per_student_attention_frames = {}  # {student_id: [label, label, ...]}
+        self.name_to_student_id = {}
+        self.next_student_id = 1
         # === Threading Setup ===
         self.shared_frame = None
         self.shared_boxes = []
@@ -202,18 +207,75 @@ class VideoWindow(QWidget):
         self.attention_labels = []
         self.recognized_names = []
         self.tracked_faces = []
-
         self.frame_ready = threading.Event()
+        self.frame_ready1 = threading.Event()
         self.face_done = threading.Event()
         self.detection_done = threading.Event()
 
         self.attention_done = threading.Event()
+        self.attention_done1 = threading.Event()
         self.recog_done = threading.Event()
+        self.tracker_done_For_Det = threading.Event()
+        self.tracker_done_For_Att = threading.Event()
+        self.tracker_done_For_Cap = threading.Event()
+        self.tracker_done1 = threading.Event()
         self.stop_event = threading.Event()
+
+        self.latest_attention = 0
+        self.latest_comprehension = 0
+        self.latest_active = 0
         # self.timer = QTimer()
         # self.timer.timeout.connect(self.next_frame)
+        self.alert_timer = QTimer()
+        self.alert_timer.timeout.connect(self.update_attention_alert)
+
+        self.attention_logs=[]
+        self.alert_timer.timeout.connect(self.update_metrics_display)
+
+        #self.alert_timer.timeout.connect(self.log_attention_per_second)
+        self.alert_timer.start(1000)  # every 1000 ms = 1 second
+
+        #self.engagements_timer = QTimer()
+        #self.engagements_timer.timeout.connect(self.collect_engagement_data)
+        #self.engagements_timer.start(7000)  # every 7000 ms = 7 second
 
 
+    def log_attention_per_second(self):
+        """
+        Aggregates per-frame attention labels over the last second
+        and logs one attention label per student.
+        """
+        timestamp = QDateTime.currentDateTime().toString("yyyy-MM-dd hh:mm:ss")
+
+        for student_id, labels in self.per_student_attention_frames.items():
+            if not labels or len(labels) == 0:
+                continue
+
+            # Get the most common label (majority vote)
+            label_counter = Counter(labels)
+            most_common_label, count = label_counter.most_common(1)[0]
+
+            # Reverse-lookup name from student_id
+            name = next((n for n, sid in self.name_to_student_id.items() if sid == student_id), "Unknown")
+
+            log_entry = {
+                "timestamp": timestamp,
+                "student_id": student_id,
+                "name": name,
+                "attention": most_common_label,
+                "confidence": round(count / len(labels), 2)  # optional: % of agreement
+            }
+
+            self.attention_logs.append(log_entry)
+            print(f"[AGG_LOG] {log_entry}")
+
+        # Clear buffer for next second
+        self.per_student_attention_frames.clear()
+
+    def update_metrics_display(self):
+        self.attention_bar.setValue(self.latest_attention)
+        self.comprehension_bar.setValue(self.latest_comprehension)
+        self.active_label.setText(f"Active Students: {self.latest_active}")
     def add_alert(self, message, alert_type="danger"):
         time_str = QDateTime.currentDateTime().toString("hh:mm:ss")
         item = QListWidgetItem(f"[{time_str}] {message}")
@@ -230,6 +292,93 @@ class VideoWindow(QWidget):
         self.alerts_widget.addItem(item)
         self.alerts_widget.scrollToBottom()
 
+    def collect_engagement_data(self):
+        import time
+        timestamp = int(time.time())
+        class_id = 2
+        course_id = 1
+        timetable_id = 4
+        transcript_id = 1
+        topic_id = 1
+
+        for student_id, labels in self.per_student_attention_frames.items():
+            total = len(labels)
+            if total == 0:
+                continue
+
+            attentive_count = sum(1 for label in labels if label == "attentive")
+
+            try:
+                attention_percent = round(100 * attentive_count / total, 2)
+                understanding_percent = attention_percent  # Replace if needed
+
+                if not (0 <= attention_percent <= 100):
+                    raise ValueError("Invalid percentage range")
+
+                engagement = {
+                    "timestamp": timestamp,
+                    "studentId": student_id,
+                    "classId": class_id,
+                    "courseId": course_id,
+                    "timetableId": timetable_id,
+                    "attentionPercentage": float(attention_percent),
+                    "understandingPercentage": float(understanding_percent),
+                    "transcriptId": transcript_id,
+                    "topicId": topic_id
+                }
+
+                self.engagements.append(engagement)
+            except Exception as e:
+                print(f"[ERROR] Skipping invalid engagement for student {student_id}: {e}")
+
+    def login_and_get_token(self, email, password):
+        """
+        Logs in to the backend and returns the access token.
+        """
+        import requests
+        url = "http://localhost:3001/api/auth/login"  # Replace with your actual login endpoint
+        headers = {'Content-Type': 'application/json'}
+        payload = {"email": email, "password": password}
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            if response.status_code in (200, 201):
+                data = response.json()
+                return data.get("access_token")
+            else:
+                print(f"Login failed: {response.status_code} {response.text}")
+                return None
+        except Exception as e:
+            print(f"Login error: {e}")
+            return None
+
+    def send_engagements_with_login(self  ):
+        """
+        Logs in, gets the token, and sends self.engagements to the backend with the token.
+        """
+        import requests
+        import json
+        email="john.smith@school.edu"
+        password="teacher123"
+        token = self.login_and_get_token(email, password)
+        class_id = 2
+        if not token:
+            print("Could not obtain access token. Aborting send.")
+            return
+        url = f"http://localhost:3001/api/student-engagement/bulk/{class_id}"
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {token}'
+        }
+        payload = {"engagements": self.engagements}
+        try:
+            response = requests.post(url, headers=headers, data=json.dumps(payload))
+            if response.status_code == 200:
+                print("Engagements sent successfully!")
+            else:
+                print(f"Failed to send engagements: {response.status_code} {response.text}")
+        except Exception as e:
+            print(f"Error sending engagements: {e}")
+
     def start_video(self):
         self.capture = VideoCaptureHandler(self.video_path)
         self.fps = self.capture.get_fps()
@@ -238,6 +387,7 @@ class VideoWindow(QWidget):
         self.recognizer = FaceRecognizer(self.face_db_path, self.device)
         self.tracker = FaceTracker()
         self.display = DisplayManager(color_map)
+        self.per_student_attention_frames = {}  # {student_id: [label, label, ...]}
 
         self.frame_count = 0
         self.attn_stats = []
@@ -250,16 +400,45 @@ class VideoWindow(QWidget):
         self.fps_start_time = time.time()
         self.fps_frame_count = 0
 
+        self.tracker_done_For_Cap.set()
+        #self.tracker_done_For_Det.set()
+        #self.tracker_done_For_Att.set()
+
         # Start threads
         threading.Thread(target=self.run_capture, daemon=True).start()
         threading.Thread(target=self.run_detection, daemon=True).start()
         threading.Thread(target=self.run_attention, daemon=True).start()
         threading.Thread(target=self.run_tracker, daemon=True).start()
+        threading.Thread(target=self.update_display, daemon=True).start()
         # threading.Thread(target=self.run_recognizer, daemon=True).start()  # Commented out - recognition handled by tracker
 
         # Start timer for GUI updates
         self.timer.start(33)  # ~30 FPS
+    def update_attention_alert(self):
+        attention = self.latest_attention
+        if attention < 50:
+            phrase = f"Most students are inattentive ({attention}%)"
+            alert_type = "danger"
+        elif attention < 75:
+            phrase = f"Most students are medium attentive ({attention}%)"
+            alert_type = "warning"
+        else:
+            phrase = f"Most students are attentive ({attention}%)"
+            alert_type = "success"
 
+        time_str = QDateTime.currentDateTime().toString("hh:mm:ss")
+        item = QListWidgetItem(f"[{time_str}] {phrase}")
+        if alert_type == "success":
+            item.setBackground(QColor("#c6f6d5"))  # light green
+            item.setForeground(QColor("#22543d"))
+        elif alert_type == "warning":
+            item.setBackground(QColor("#fefcbf"))  # light yellow
+            item.setForeground(QColor("#744210"))
+        else:
+            item.setBackground(QColor("#fed7d7"))  # light red
+            item.setForeground(QColor("#742a2a"))
+        self.alerts_widget.addItem(item)
+        self.alerts_widget.scrollToBottom()
     def stop_video(self):
         self.running = False
         self.stop_event.set()
@@ -267,75 +446,134 @@ class VideoWindow(QWidget):
             self.capture.release()
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        if self.attention_logs:
+            df_log = pd.DataFrame(self.attention_logs)
+            try:
+                df_log.to_csv('aggregated_attention_log.csv', index=False)
+                print("Aggregated attention log saved.")
+            except Exception as e:
+                print(f"Error saving attention log: {e}")
+
+        self.send_engagements_with_login()
         # Write timing log to Excel
+        '''
         if self.timing_log:
             df_timing = pd.DataFrame(self.timing_log)
             try:
-                excel_path = 'pyqt_timings.xlsx'
+                excel_path = 'pyqt_thread_timings_real_kids.xlsx'
                 df_timing.to_excel(excel_path, index=False)
                 print(f"Timing log saved to {excel_path}")
             except Exception as e:
                 print(f"Excel logging error: {e}")
+                
+        '''
     def update_gui_frame(self):
         """Update GUI with latest processed frame"""
-        if self.latest_frame is not None:
-            try:
-                rgb_image = cv2.cvtColor(self.latest_frame, cv2.COLOR_BGR2RGB)
-                h, w, ch = rgb_image.shape
-                bytes_per_line = ch * w
-                qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
-                pixmap = QPixmap.fromImage(qt_image)
-                
-                self.video_label.setPixmap(pixmap.scaled(
-                    self.video_label.width(), 
-                    self.video_label.height(), 
-                    Qt.KeepAspectRatio, 
-                    Qt.SmoothTransformation
-                ))
-                
-                # Update FPS display
-                self.fps_label.setText(f"FPS: {self.current_fps:.2f}")
-                
-            except Exception as e:
-                print(f"[GUI] Error updating display: {e}")
+
+    def update_display(self):
+        """Update GUI with latest processed frame"""
+        while self.running and not self.stop_event.is_set():
+            self.tracker_done1.wait()
+            self.tracker_done1.clear()
+           
+            print("Display_started\r\n")
+            if self.latest_frame is not None:
+                try:
+                    rgb_image = cv2.cvtColor(self.latest_frame, cv2.COLOR_BGR2RGB)
+                    h, w, ch = rgb_image.shape
+                    bytes_per_line = ch * w
+                    qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
+                    pixmap = QPixmap.fromImage(qt_image)
+
+                    self.video_label.setPixmap(pixmap.scaled(
+                        self.video_label.width(),
+                        self.video_label.height(),
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation
+                    ))
+
+                    # Update FPS display
+                    self.fps_label.setText(f"FPS: {self.current_fps:.2f}")
+
+                except Exception as e:
+                    print(f"[GUI] Error updating display: {e}")
+            print("Display_Ended\r\n")
 
     def run_capture(self):
-        print("[CAPTURE] Thread started")
         while self.running and not self.stop_event.is_set():
+            self.tracker_done_For_Cap.wait()
+            self.tracker_done_For_Cap.clear()
+            print("CAPTURE_started\r\n")
+            thread_start = time.perf_counter()
             ret, frame = self.capture.read()
             if not ret:
-                print("[CAPTURE] Frame not read, retrying...")
+                #print("[CAPTURE] Frame not read, retrying...")
                 continue
 
-            print("[CAPTURE] Frame captured")
+            #print("[CAPTURE] Frame captured")
             self.shared_frame = frame.copy()
+            total_duration = time.perf_counter() - thread_start
 
+            if hasattr(self, 'timing_log'):
+                self.timing_log.append({
+                    'thread': 'Capture',
+                    'frame': 'ALL',
+                    'time': total_duration
+                })
             self.frame_ready.set()  # Let others start
-            print("[CAPTURE] frame_ready set")
-            time.sleep(0.1)  # 100ms
+            self.frame_ready1.set()  # Let others start
+            print("CAPTURE_Ended\r\n")
+            #print("[CAPTURE] frame_ready set")
+            #time.sleep(0.033)  # 100ms
 
     def run_detection(self):
-        print("[DETECTION] Thread started")
+
         while self.running and not self.stop_event.is_set():
             self.frame_ready.wait()
+            # Clear frame_ready to allow capture to set it again for next cycle
+            self.frame_ready.clear()
+            #self.tracker_done_For_Det.wait()
+            #self.tracker_done_For_Det.clear()
+
             if self.shared_frame is None:
                 continue
 
-            print("[DETECTION] Detecting faces")
+            print("DETECTION_started\r\n")
+
+            thread_start = time.perf_counter()
+
+            #print("[DETECTION] Detecting faces")
             frame = self.shared_frame.copy()
 
             self.shared_detections = self.detector.detect(frame)
+            total_duration = time.perf_counter()-thread_start
 
+            if hasattr(self, 'timing_log'):
+                self.timing_log.append({
+                    'thread': 'DETECTION_TOTAL',
+                    'frame': 'ALL',
+                    'time': total_duration
+                })
             self.detection_done.set()
+            print("DETECTION_Ended\r\n")
             # self.face_done.set()  # Set face_done for recognizer - commented out since recognition thread is disabled
-            print("[DETECTION] Detection complete")
+            #print("[DETECTION] Detection complete")
 
     def run_attention(self):
-        print("[ATTENTION] Thread started")
+
         while self.running and not self.stop_event.is_set():
-            self.frame_ready.wait()
+            self.frame_ready1.wait()
+            # Clear frame_ready to allow capture to set it again for next cycle
+            self.frame_ready1.clear()
+            #self.tracker_done_For_Att.wait()
+            #self.tracker_done_For_Att.clear()
+
             if self.shared_frame is None:
                 continue
+
+            print("ATTENTION_started\r\n")
+
+            thread_start = time.perf_counter()
 
             print("[ATTENTION] Classifying attention")
             frame = self.shared_frame.copy()
@@ -346,20 +584,31 @@ class VideoWindow(QWidget):
             # Get attention labels for the detected faces
             face_boxes = [d['box'] for d in self.shared_detections] if self.shared_detections else []
             self.attention_labels = self.attention.get_attention_labels(face_boxes, frame, attn_detections)
-            print(f"[ATTENTION] attention_labels type: {type(self.attention_labels)}, value: {self.attention_labels}")
+            #print(f"[ATTENTION] attention_labels type: {type(self.attention_labels)}, value: {self.attention_labels}")
+            total_duration = time.perf_counter() - thread_start
 
+            if hasattr(self, 'timing_log'):
+                self.timing_log.append({
+                    'thread': 'ATTENTION_TOTAL',
+                    'frame': 'ALL',
+                    'time': total_duration
+                })
             self.attention_done.set()
-            print("[ATTENTION] Attention complete, attention_done set")
+            #self.attention_done1.set()
+            print("ATTENTION_Ended\r\n")
+            #print("[ATTENTION] Attention complete, attention_done set")
 
     def run_recognizer(self):
-        print("[RECOGNITION] Thread started")
+
         while self.running and not self.stop_event.is_set():
             print("[RECOGNITION] Waiting for face_done...")
             self.face_done.wait()
             if self.shared_frame is None:
                 continue
-                
-            print("[RECOGNITION] Recognizing faces")
+
+            print("RECOGNITION_started")
+
+            #print("[RECOGNITION] Recognizing faces")
             frame = self.shared_frame.copy()
 
             # Extract boxes from detections and recognize each face
@@ -376,21 +625,26 @@ class VideoWindow(QWidget):
             
             self.recog_done.set()
             self.recog_done.clear()
-            
-            print("[RECOGNITION] Recognition complete, clearing face_done")
+
+            print("RECOGNITION_Ended")
+            #print("[RECOGNITION] Recognition complete, clearing face_done")
             # Clear face_done to wait for next detection
             self.face_done.clear()
 
     def run_tracker(self):
-        print("[TRACKER] Thread started")
-        while self.running and not self.stop_event.is_set():
-            print("[TRACKER] Waiting for detection and attention...")
-            self.detection_done.wait()
-            print("[TRACKER] Detection done received")
-            self.attention_done.wait()
-            print("[TRACKER] Attention done received")
 
-            print("[TRACKER] Updating tracked faces")
+        while self.running and not self.stop_event.is_set():
+            #print("[TRACKER] Waiting for detection and attention...")
+            self.detection_done.wait()
+            self.detection_done.clear()
+            #print("[TRACKER] Detection done received")
+            self.attention_done.wait()
+            self.attention_done.clear()
+
+            print("TRACKER_started\r\n")
+            #print("[TRACKER] Updating tracked faces")
+            thread_start = time.perf_counter()
+
 
             # Copy and process frame
             frame = self.shared_frame.copy()
@@ -408,8 +662,22 @@ class VideoWindow(QWidget):
                 self.recognizer,
                 frame
             )
-
-            self.frame_count += 1
+            # In run_tracker, after you get tracked_faces and attention_labels:
+            for i, face in enumerate(tracked_faces):
+                matched_id, x1, y1, x2, y2, name, conf = face
+                label = self.attention_labels[i] if i < len(self.attention_labels) else "Unknown"
+                # Dynamic student ID assignment
+                if name not in self.name_to_student_id and name != "Unknown":
+                    self.name_to_student_id[name] = self.next_student_id
+                    self.next_student_id += 1
+                student_id = self.name_to_student_id.get(name, None)
+                if student_id is None:
+                    continue
+                # Store label for this frame
+                if student_id not in self.per_student_attention_frames:
+                    self.per_student_attention_frames[student_id] = []
+                self.per_student_attention_frames[student_id].append(label)
+                self.frame_count += 1
             
             # Update FPS calculation
             self.fps_frame_count += 1
@@ -419,50 +687,65 @@ class VideoWindow(QWidget):
                 self.current_fps = self.fps_frame_count / elapsed_time
                 self.fps_frame_count = 0
                 self.fps_start_time = current_time
-                print(f"[FPS] Current FPS: {self.current_fps:.2f}")
+                self.log_attention_per_second()  # <-- aggregate attention once per second
 
-            print(f"[TRACKER] attention_labels type: {type(self.attention_labels)}, value: {self.attention_labels}")
+                #print(f"[FPS] Current FPS: {self.current_fps:.2f}")
+
+            #print(f"[TRACKER] attention_labels type: {type(self.attention_labels)}, value: {self.attention_labels}")
             processed_frame = self.display.draw(
                 frame,
                 tracked_faces,
                 self.attention_labels,
                 self.attention.names
             )
+            if self.attention_labels:
+                attentive_count = sum(1 for label in self.attention_labels if label == "attentive")
+                inattentive_count = sum(1 for label in self.attention_labels if label == "inattentive")
+                total = len(self.attention_labels)
+                if total > 0:
+                    attention_percent = int(100 * attentive_count / total)
+                    comprehension_percent = int(100 * attentive_count / total)  # Replace with real logic if needed
+                    active_students = total
+                else:
+                    attention_percent = 0
+                    comprehension_percent = 0
+                    active_students = 0
+            else:
+                attention_percent = 0
+                comprehension_percent = 0
+                active_students = 0
 
+            # Store for GUI update
+            self.latest_attention = attention_percent
+            self.latest_comprehension = comprehension_percent
+            self.latest_active = active_students
             # Store the processed frame for GUI update
             self.latest_frame = processed_frame.copy()
-            print("[TRACKER] Frame stored for GUI update")
+            #print("[TRACKER] Frame stored for GUI update")
             
-            print("[TRACKER] Processing complete, clearing events")
-            
-            # Clear frame_ready to allow capture to set it again for next cycle
-            self.frame_ready.clear()
-            
-            # Clear events to prep for next cycle
-            self.detection_done.clear()
-            self.attention_done.clear()
+            #print("[TRACKER] Processing complete, clearing events")
+            total_duration = time.perf_counter() - thread_start
+            if hasattr(self, 'timing_log'):
+                self.timing_log.append({
+                    'thread': 'Tracker_TOTAL',
+                    'frame': 'ALL',
+                    'time': total_duration
+                })
+            if hasattr(self, 'timing_log'):
+                self.timing_log.append({
+                    'thread': 'FPS',
+                    'frame': 'ALL',
+                    'time': self.current_fps
+                })
 
-    def update_display(self, frame):
-        print("[DISPLAY] DISPLAYING THE IMAGES")
-        try:
-            rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            h, w, ch = rgb_image.shape
-            bytes_per_line = ch * w
-            qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
-            pixmap = QPixmap.fromImage(qt_image)
+            self.tracker_done1.set()
+            #self.tracker_done_For_Det.set()
+            #self.tracker_done_For_Att.set()
+            self.tracker_done_For_Cap.set()
 
-            # Use moveToThread to ensure this runs on the main thread
-            QTimer.singleShot(0, lambda: self.video_label.setPixmap(
-                pixmap.scaled(
-                    self.video_label.width(), 
-                    self.video_label.height(), 
-                    Qt.KeepAspectRatio, 
-                    Qt.SmoothTransformation
-                )
-            ))
-            print("[DISPLAY] Frame sent to GUI")
-        except Exception as e:
-            print(f"[DISPLAY] Error updating display: {e}")
+            print("TRACKER_Ended\r\n")
+
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
