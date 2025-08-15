@@ -23,21 +23,32 @@ class AttentionDetector:
         # face_boxes: list of (x1, y1, x2, y2)
         if attn_boxes is None:
             attn_boxes = self.detect(frame)
+
         labels = []
+        confidences = []
+
         for (x1, y1, x2, y2) in face_boxes:
             attention_label = "inattentive"
             best_iou = 0
+            best_conf = 0.0
+
             for attn in attn_boxes:
                 ax1, ay1, ax2, ay2 = attn['box']
                 cls = attn['class']
+                conf = attn.get('conf', 0.0)  # confidence from detection
                 iou = self.compute_iou((x1, y1, x2, y2), (ax1, ay1, ax2, ay2))
+
                 if iou > best_iou and iou > 0.08:
                     best_iou = iou
+                    best_conf = conf
                     attention_label = self.names[cls]
                     if attention_label == "unattentive":
                         attention_label = "inattentive"
+
             labels.append(attention_label)
-        return labels
+            confidences.append(best_conf)
+
+        return labels, confidences
 
     @staticmethod
     def compute_iou(boxA, boxB):

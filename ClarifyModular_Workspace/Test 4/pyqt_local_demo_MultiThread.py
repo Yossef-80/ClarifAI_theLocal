@@ -38,6 +38,7 @@ from collections import Counter
 class VideoWindow(QWidget):
     def __init__(self):
         super().__init__()
+        self.shared_attn_detections = []
         self.setWindowTitle("ClarifAI Modular - Local Video Processing Demo")
         self.setGeometry(100, 100, 1280, 800)
         self.setStyleSheet("""
@@ -164,6 +165,7 @@ class VideoWindow(QWidget):
         grid.setVerticalSpacing(18)
         self.setLayout(grid)
         self.timing_log = []  # Store frame-by-frame and total timing
+        self.log_buffer = []  # store log_entry each second
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_gui_frame)
@@ -179,10 +181,10 @@ class VideoWindow(QWidget):
         self.engagements = []
         # Video/model setup
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.video_path = "../../Source Video/Real_Video/vid3.mp4"
+        self.video_path = "../../Source Video/combined videos.mp4"
         self.face_model_path = '../../yolo_detection_model/yolov11s-face.pt'
         self.attention_model_path = '../../yolo_attention_model/attention_weights_16july2025.pt'
-        self.face_db_path = '../../AI_VID_face_db_real_kids.pkl'
+        self.face_db_path = '../../AI_VID_face_db.pkl'
         self.capture = None
         self.detector = None
         self.attention = None
@@ -220,6 +222,7 @@ class VideoWindow(QWidget):
         self.tracker_done_For_Cap = threading.Event()
         self.tracker_done1 = threading.Event()
         self.stop_event = threading.Event()
+        self.log_event = threading.Event()
 
         self.latest_attention = 0
         self.latest_comprehension = 0
@@ -231,31 +234,35 @@ class VideoWindow(QWidget):
 
         self.attention_logs=[]
         self.alert_timer.timeout.connect(self.update_metrics_display)
-
         #self.alert_timer.timeout.connect(self.log_attention_per_second)
         self.alert_timer.start(1000)  # every 1000 ms = 1 second
+
+        #TIME  LOGGING CONTROLLER
+        self.enable_time_log = False
 
         #self.engagements_timer = QTimer()
         #self.engagements_timer.timeout.connect(self.collect_engagement_data)
         #self.engagements_timer.start(7000)  # every 7000 ms = 7 second
 
-
     def log_attention_per_second(self):
-        """
-        Aggregates per-frame attention labels over the last second
-        and logs one attention label per student.
-        """
         timestamp = QDateTime.currentDateTime().toString("yyyy-MM-dd hh:mm:ss")
 
-        for student_id, labels in self.per_student_attention_frames.items():
-            if not labels or len(labels) == 0:
+        for student_id, frames in self.per_student_attention_frames.items():
+            if not frames:
                 continue
 
-            # Get the most common label (majority vote)
+            # Separate labels and confidences
+            labels = [lbl for lbl, _ in frames]
+            confidences = [conf for _, conf in frames]
+
+            # Majority vote
             label_counter = Counter(labels)
             most_common_label, count = label_counter.most_common(1)[0]
 
-            # Reverse-lookup name from student_id
+            # Latest frame
+            latest_label, latest_confidence = frames[-1]
+
+            # Reverse lookup student name
             name = next((n for n, sid in self.name_to_student_id.items() if sid == student_id), "Unknown")
 
             log_entry = {
@@ -263,14 +270,143 @@ class VideoWindow(QWidget):
                 "student_id": student_id,
                 "name": name,
                 "attention": most_common_label,
-                "confidence": round(count / len(labels), 2)  # optional: % of agreement
+                "confidence": round(count / len(frames), 2),  # agreement percentage
+                "latest_label": latest_label,
+                "latest_confidence": round(latest_confidence, 2)
             }
 
             self.attention_logs.append(log_entry)
+            self.log_buffer.append(log_entry)
             print(f"[AGG_LOG] {log_entry}")
 
-        # Clear buffer for next second
         self.per_student_attention_frames.clear()
+
+    def compute_engagements_from_log_buffer(self):
+        """
+        Processes log buffer into engagement metrics:
+          - Aggregates per 7-second windows
+          - Computes average attention per student & topic
+          - Saves report to Excel with two sheets
+        """
+        import pandas as pd
+        import time
+
+        print("[STEP 1] Checking log buffer...")
+        if not self.log_buffer:
+            print("⚠ No data in log buffer.")
+            return
+
+        # -----------------------
+        # 2. Configurable constants
+        # -----------------------
+        print("[STEP 2] Setting constants...")
+        CLASS_ID = 2
+        COURSE_ID = 1
+        TIMETABLE_ID = 4
+        TRANSCRIPT_ID = 1
+        TOPIC_ID = 1
+
+        # -----------------------
+        # 3. Prepare DataFrame
+        # -----------------------
+        print("[STEP 3] Creating DataFrame from log buffer...")
+        df = pd.DataFrame(self.log_buffer)
+
+        print("[STEP 3.1] Parsing timestamps...")
+        df["timestamp_dt"] = pd.to_datetime(df["timestamp"], format="%Y-%m-%d %H:%M:%S")
+        start_time = df["timestamp_dt"].min()
+
+        self.engagements = []  # Reset engagements list
+
+        # -----------------------
+        # 4. Process data in 7-second windows
+        # -----------------------
+        print(f"[STEP 4] Processing windows... DataFrame columns: {df.columns.tolist()}")
+
+        topic_counter = 1  # Start topic ID at 1
+
+        while not df.empty:
+            window_end = start_time + pd.Timedelta(seconds=10)
+            window_df = df[(df["timestamp_dt"] >= start_time) & (df["timestamp_dt"] < window_end)]
+
+            print(f"   Processing window: {start_time} to {window_end} | {len(window_df)} rows")
+
+            try:
+                for student_id, group in window_df.groupby("student_id"):
+                    print(f"      -> Student ID: {student_id}, Rows: {len(group)}")
+
+                    if "name" not in group.columns:
+                        print("      ❌ Missing 'student_name' column in group!")
+                        continue
+
+                    total = len(group)
+                    attentive_count = sum(str(attn).lower() == "attentive" for attn in group["attention"])
+                    attention_percent = round(100 * attentive_count / total, 2)
+
+                    self.engagements.append({
+                        "timestamp": int(window_end.timestamp()),
+                        "studentId": student_id,
+                        "studentName": group["name"].iloc[0],
+                        "classId": CLASS_ID,
+                        "courseId": COURSE_ID,
+                        "timetableId": TIMETABLE_ID,
+                        "attentionPercentage": float(attention_percent),
+                        "understandingPercentage": float(attention_percent),
+                        "transcriptId": TRANSCRIPT_ID,
+                        "topicId": topic_counter
+                    })
+
+            except Exception as e:
+                print(f"   ❌ Error processing window {start_time} - {window_end}: {e}")
+
+            topic_counter += 1  # Increment topic ID for next window
+            start_time = window_end
+            df = df[df["timestamp_dt"] >= start_time]
+        # -----------------------
+        # 5. Aggregate averages
+        # -----------------------
+        print("[STEP 5] Aggregating averages...")
+        if not self.engagements:
+            print("⚠ No engagements computed.")
+            self.avg_attention_per_topic = []
+            return
+
+        engagements_df = pd.DataFrame(self.engagements)
+
+        print("[STEP 5.1] Grouping by student & topic...")
+        avg_by_topic_student = (
+            engagements_df
+            .groupby(["studentId", "studentName", "topicId"], as_index=False)["attentionPercentage"]
+            .mean()
+            .rename(columns={"attentionPercentage": "avgAttentionPercentage"})
+        )
+
+        self.avg_attention_per_topic = avg_by_topic_student.to_dict(orient="records")
+        print(f"[AVG_ATTENTION] {self.avg_attention_per_topic}")
+
+        # -----------------------
+        # 6. Save results to Excel
+        # -----------------------
+        print("[STEP 6] Saving results to Excel...")
+        timestamp_str = time.strftime("%Y-%m-%d_%H-%M-%S")
+        filename = f"engagement_report_{timestamp_str}.xlsx"
+
+        try:
+            print("   Opening ExcelWriter...")
+            writer = pd.ExcelWriter(filename, engine="openpyxl")
+
+            print("   Writing Per Window Data...")
+            engagements_df.to_excel(writer, sheet_name="Per Window Data", index=False)
+
+            print("   Writing Average Per Topic...")
+            avg_by_topic_student.to_excel(writer, sheet_name="Average Per Topic", index=False)
+
+            print("   Closing writer...")
+            writer.close()
+
+            print(f"✅ Engagement report saved to {filename}")
+        except Exception as e:
+            print(f"❌ Error saving engagement report Excel: {e}")
 
     def update_metrics_display(self):
         self.attention_bar.setValue(self.latest_attention)
@@ -351,25 +487,33 @@ class VideoWindow(QWidget):
             print(f"Login error: {e}")
             return None
 
-    def send_engagements_with_login(self  ):
+    def send_engagements_with_login(self):
         """
         Logs in, gets the token, and sends self.engagements to the backend with the token.
         """
         import requests
         import json
-        email="john.smith@school.edu"
-        password="teacher123"
+        email = "john.smith@school.edu"
+        password = "teacher123"
         token = self.login_and_get_token(email, password)
         class_id = 2
         if not token:
             print("Could not obtain access token. Aborting send.")
             return
+
+        # Remove studentName field from each engagement
+        clean_engagements = []
+        for eng in self.engagements:
+            eng_copy = {k: v for k, v in eng.items() if k != "studentName"}
+            clean_engagements.append(eng_copy)
+
         url = f"http://localhost:3001/api/student-engagement/bulk/{class_id}"
         headers = {
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {token}'
         }
-        payload = {"engagements": self.engagements}
+        payload = {"engagements": clean_engagements}
+
         try:
             response = requests.post(url, headers=headers, data=json.dumps(payload))
             if response.status_code == 200:
@@ -410,10 +554,19 @@ class VideoWindow(QWidget):
         threading.Thread(target=self.run_attention, daemon=True).start()
         threading.Thread(target=self.run_tracker, daemon=True).start()
         threading.Thread(target=self.update_display, daemon=True).start()
+        threading.Thread(target=self.logging_thread, daemon=True).start()
+
         # threading.Thread(target=self.run_recognizer, daemon=True).start()  # Commented out - recognition handled by tracker
 
         # Start timer for GUI updates
         self.timer.start(33)  # ~30 FPS
+
+    def logging_thread(self):
+        while self.running and not self.stop_event.is_set():
+            self.log_event.wait()  # Wait until tracker signals
+            self.log_event.clear()  # Reset for next trigger
+            self.log_attention_per_second()
+
     def update_attention_alert(self):
         attention = self.latest_attention
         if attention < 50:
@@ -454,18 +607,22 @@ class VideoWindow(QWidget):
             except Exception as e:
                 print(f"Error saving attention log: {e}")
 
+        self.compute_engagements_from_log_buffer()
+
         self.send_engagements_with_login()
+
         # Write timing log to Excel
         '''
-        if self.timing_log:
-            df_timing = pd.DataFrame(self.timing_log)
-            try:
-                excel_path = 'pyqt_thread_timings_real_kids.xlsx'
-                df_timing.to_excel(excel_path, index=False)
-                print(f"Timing log saved to {excel_path}")
-            except Exception as e:
-                print(f"Excel logging error: {e}")
-                
+        if self.enable_time_log:
+            if self.timing_log:
+                df_timing = pd.DataFrame(self.timing_log)
+                try:
+                    excel_path = 'pyqt_thread_timings_real_kids.xlsx'
+                    df_timing.to_excel(excel_path, index=False)
+                    print(f"Timing log saved to {excel_path}")
+                except Exception as e:
+                    print(f"Excel logging error: {e}")
+                    
         '''
     def update_gui_frame(self):
         """Update GUI with latest processed frame"""
@@ -504,7 +661,8 @@ class VideoWindow(QWidget):
             self.tracker_done_For_Cap.wait()
             self.tracker_done_For_Cap.clear()
             print("CAPTURE_started\r\n")
-            thread_start = time.perf_counter()
+            if self.enable_time_log:
+                thread_start = time.perf_counter()
             ret, frame = self.capture.read()
             if not ret:
                 #print("[CAPTURE] Frame not read, retrying...")
@@ -512,14 +670,15 @@ class VideoWindow(QWidget):
 
             #print("[CAPTURE] Frame captured")
             self.shared_frame = frame.copy()
-            total_duration = time.perf_counter() - thread_start
+            if self.enable_time_log:
+                total_duration = time.perf_counter() - thread_start
 
-            if hasattr(self, 'timing_log'):
-                self.timing_log.append({
-                    'thread': 'Capture',
-                    'frame': 'ALL',
-                    'time': total_duration
-                })
+                if hasattr(self, 'timing_log'):
+                    self.timing_log.append({
+                        'thread': 'Capture',
+                        'frame': 'ALL',
+                        'time': total_duration
+                    })
             self.frame_ready.set()  # Let others start
             self.frame_ready1.set()  # Let others start
             print("CAPTURE_Ended\r\n")
@@ -539,21 +698,22 @@ class VideoWindow(QWidget):
                 continue
 
             print("DETECTION_started\r\n")
-
-            thread_start = time.perf_counter()
+            if self.enable_time_log:
+                thread_start = time.perf_counter()
 
             #print("[DETECTION] Detecting faces")
             frame = self.shared_frame.copy()
 
             self.shared_detections = self.detector.detect(frame)
-            total_duration = time.perf_counter()-thread_start
+            if self.enable_time_log:
+                total_duration = time.perf_counter()-thread_start
 
-            if hasattr(self, 'timing_log'):
-                self.timing_log.append({
-                    'thread': 'DETECTION_TOTAL',
-                    'frame': 'ALL',
-                    'time': total_duration
-                })
+                if hasattr(self, 'timing_log'):
+                    self.timing_log.append({
+                        'thread': 'DETECTION_TOTAL',
+                        'frame': 'ALL',
+                        'time': total_duration
+                    })
             self.detection_done.set()
             print("DETECTION_Ended\r\n")
             # self.face_done.set()  # Set face_done for recognizer - commented out since recognition thread is disabled
@@ -572,27 +732,30 @@ class VideoWindow(QWidget):
                 continue
 
             print("ATTENTION_started\r\n")
-
-            thread_start = time.perf_counter()
+            if self.enable_time_log:
+                thread_start = time.perf_counter()
 
             print("[ATTENTION] Classifying attention")
             frame = self.shared_frame.copy()
 
             # Get attention detections
             attn_detections = self.attention.detect(frame)
-            
-            # Get attention labels for the detected faces
-            face_boxes = [d['box'] for d in self.shared_detections] if self.shared_detections else []
-            self.attention_labels = self.attention.get_attention_labels(face_boxes, frame, attn_detections)
-            #print(f"[ATTENTION] attention_labels type: {type(self.attention_labels)}, value: {self.attention_labels}")
-            total_duration = time.perf_counter() - thread_start
+            self.shared_attn_detections = attn_detections
 
-            if hasattr(self, 'timing_log'):
-                self.timing_log.append({
-                    'thread': 'ATTENTION_TOTAL',
-                    'frame': 'ALL',
-                    'time': total_duration
-                })
+            # Get attention labels for the detected faces
+            # face_boxes = [d['box'] for d in self.shared_detections] if self.shared_detections else []
+            # self.attention_labels, self.attention_confidences = self.attention.get_attention_labels(face_boxes, frame,
+            #                                                                                         attn_detections)
+            #print(f"[ATTENTION] attention_labels type: {type(self.attention_labels)}, value: {self.attention_labels}")
+            if self.enable_time_log:
+                total_duration = time.perf_counter() - thread_start
+
+                if hasattr(self, 'timing_log'):
+                    self.timing_log.append({
+                        'thread': 'ATTENTION_TOTAL',
+                        'frame': 'ALL',
+                        'time': total_duration
+                    })
             self.attention_done.set()
             #self.attention_done1.set()
             print("ATTENTION_Ended\r\n")
@@ -643,12 +806,18 @@ class VideoWindow(QWidget):
 
             print("TRACKER_started\r\n")
             #print("[TRACKER] Updating tracked faces")
-            thread_start = time.perf_counter()
+            if self.enable_time_log:
+                thread_start = time.perf_counter()
 
 
             # Copy and process frame
             frame = self.shared_frame.copy()
-
+            face_boxes = [d['box'] for d in self.shared_detections] if self.shared_detections else []
+            self.attention_labels, self.attention_confidences = self.attention.get_attention_labels(
+                face_boxes,
+                frame,
+                self.shared_attn_detections
+            )
             converted_boxes = []
             for d in self.shared_detections:
                 x1, y1, x2, y2 = d['box']
@@ -665,18 +834,26 @@ class VideoWindow(QWidget):
             # In run_tracker, after you get tracked_faces and attention_labels:
             for i, face in enumerate(tracked_faces):
                 matched_id, x1, y1, x2, y2, name, conf = face
+
                 label = self.attention_labels[i] if i < len(self.attention_labels) else "Unknown"
+                attention_conf = self.attention_confidences[i] if hasattr(self, 'attention_confidences') and i < len(
+                    self.attention_confidences) else 0.0
+
                 # Dynamic student ID assignment
                 if name not in self.name_to_student_id and name != "Unknown":
                     self.name_to_student_id[name] = self.next_student_id
                     self.next_student_id += 1
+
                 student_id = self.name_to_student_id.get(name, None)
                 if student_id is None:
                     continue
-                # Store label for this frame
+
+                # Store (label, confidence) for this frame
                 if student_id not in self.per_student_attention_frames:
                     self.per_student_attention_frames[student_id] = []
-                self.per_student_attention_frames[student_id].append(label)
+
+                att_conf = self.attention_confidences[i] if i < len(self.attention_confidences) else 0.0
+                self.per_student_attention_frames[student_id].append((label, att_conf))
                 self.frame_count += 1
             
             # Update FPS calculation
@@ -687,7 +864,7 @@ class VideoWindow(QWidget):
                 self.current_fps = self.fps_frame_count / elapsed_time
                 self.fps_frame_count = 0
                 self.fps_start_time = current_time
-                self.log_attention_per_second()  # <-- aggregate attention once per second
+                self.log_event.set()  # Tell logging thread to log now
 
                 #print(f"[FPS] Current FPS: {self.current_fps:.2f}")
 
@@ -724,19 +901,20 @@ class VideoWindow(QWidget):
             #print("[TRACKER] Frame stored for GUI update")
             
             #print("[TRACKER] Processing complete, clearing events")
-            total_duration = time.perf_counter() - thread_start
-            if hasattr(self, 'timing_log'):
-                self.timing_log.append({
-                    'thread': 'Tracker_TOTAL',
-                    'frame': 'ALL',
-                    'time': total_duration
-                })
-            if hasattr(self, 'timing_log'):
-                self.timing_log.append({
-                    'thread': 'FPS',
-                    'frame': 'ALL',
-                    'time': self.current_fps
-                })
+            if self.enable_time_log:
+                total_duration = time.perf_counter() - thread_start
+                if hasattr(self, 'timing_log'):
+                    self.timing_log.append({
+                        'thread': 'Tracker_TOTAL',
+                        'frame': 'ALL',
+                        'time': total_duration
+                    })
+                if hasattr(self, 'timing_log'):
+                    self.timing_log.append({
+                        'thread': 'FPS',
+                        'frame': 'ALL',
+                        'time': self.current_fps
+                    })
 
             self.tracker_done1.set()
             #self.tracker_done_For_Det.set()
